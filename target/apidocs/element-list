@@ -1,0 +1,9 @@
+org.teche.merv.client
+org.teche.merv.client.auth
+org.teche.merv.client.config
+org.teche.merv.client.dto
+org.teche.merv.client.example
+org.teche.merv.client.exception
+org.teche.merv.client.logging
+org.teche.merv.client.plugin
+org.teche.merv.client.utils

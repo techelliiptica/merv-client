@@ -1,0 +1,64 @@
+# MERV Client Configuration File
+# Copy this file to your project root as merv.properties and update the values
+
+# ============================================================================
+# Server Configuration
+# ============================================================================
+# Base URL of the MERV API server
+merv.server=http://localhost:7777/api/v1
+
+# ============================================================================
+# Authentication
+# ============================================================================
+# Option 1: Username and Password (JWT Token Authentication)
+# Username for MERV API authentication
+merv.username=admin
+
+# Password for MERV API authentication
+merv.password=password
+
+# Option 2: API Key Authentication (Alternative to username/password)
+# If both are provided, API key takes precedence
+# API key for MERV API authentication (get from API Keys page in UI)
+# merv.api_key=merv_your_api_key_here
+
+# ============================================================================
+# Test Suite Configuration
+# ============================================================================
+# Test suite alias - unique identifier for test suite lookup
+# If configured, you can use getTestSuiteIdFromConfig() to get the suite ID
+merv.suite_alias=my-test-suite-alias
+
+# Parent hierarchy ID for creating test suites
+merv.parent_hierarchy=your-hierarchy-uuid-here
+
+# Regression suite title (used by Cucumber handler)
+merv.regression_suite=Regression Test Suite
+
+# Sprint name
+merv.sprint=Sprint 1
+
+# ============================================================================
+# Execution Configuration
+# ============================================================================
+# Whether test execution is parallel (true/false)
+# Used by Cucumber handler for suite status management
+merv.execution.parallel=false
+
+# ============================================================================
+# Example Usage
+# ============================================================================
+# After configuring merv.suite_alias, you can use:
+# 
+# MervClient client = new MervClient(
+#     MervConfig.getServer(),
+#     MervConfig.getUsername(),
+#     MervConfig.getPassword()
+# );
+# 
+# UUID suiteId = client.getTestSuiteIdFromConfig();
+# 
+# This will automatically look up the test suite ID using the alias
+# configured in merv.suite_alias
+# ============================================================================
+
