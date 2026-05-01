@@ -7,14 +7,24 @@ import org.teche.merv.client.config.MervConfig;
 import org.teche.merv.client.dto.*;
 import org.teche.merv.client.exception.MervClientException;
 import org.teche.merv.client.utils.FileUtils;
+import org.teche.merv.client.utils.ReportsDeleteServer;
 
 import java.io.File;
 import java.io.FileInputStream;
+import java.io.IOException;
 import java.io.InputStream;
+import java.io.UncheckedIOException;
 import java.net.InetAddress;
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.text.SimpleDateFormat;
 import java.util.*;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 
@@ -42,7 +52,17 @@ public class MervCucumberHandler implements ConcurrentEventListener {
     private static LocalTestSuite localTestSuite;
     private static final Map<UUID, LocalTestCase> localTestCases = new HashMap<>();
     private static final Map<UUID, LocalTestStep> localTestSteps = new HashMap<>();
-    private static final ObjectMapper objectMapper = new ObjectMapper().enable(SerializationFeature.INDENT_OUTPUT);
+    private static final ObjectMapper objectMapper = new ObjectMapper()
+            .enable(SerializationFeature.INDENT_OUTPUT)
+            .enable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
+    private static final Object localReportLock = new Object();
+
+    /** Branding for locally generated HTML reports (sidebar logo — red variant for light nav). */
+    private static final String MERV_REPORT_LOGO_URL = "https://merv.online/images/logo-red.png";
+    /** Primary UI gradient for local report chrome (sidebar, accents). */
+    private static final String MERV_REPORT_GRADIENT_CSS = "linear-gradient(135deg,#e90101,#c20000)";
+    /** If {@code running} stays true but JSON is not refreshed for this long, live UI treats the run as aborted (killed/stopped JVM). */
+    private static final long LOCAL_RUN_STALE_AFTER_MS = 60_000L;
 
     public EventHandler<TestStepStarted> startMervHandler = this::mervStepStart;
     public EventHandler<TestStepFinished> finishMervHandler = this::mervStepFinish;
@@ -63,24 +83,28 @@ public class MervCucumberHandler implements ConcurrentEventListener {
 
     private void mervSuiteFinish(TestRunFinished suite){
         if (!isMervEnabled()) {
+            if (localTestSuite != null) {
+                localTestSuite.setEndTime(new Date());
+                persistLocalRuntimeSnapshot(true);
+            }
             // Generate local reports when Merv is disabled
             generateLocalReports();
         } else {
-        boolean parallelFlag = false;
-        if(mervProp.containsKey("merv.execution.parallel")){
-            try {
-                parallelFlag = Boolean.parseBoolean(mervProp.getProperty("merv.execution.parallel").toLowerCase());
-                System.out.println("merv.properties successfully loaded");
-            }catch (Exception e){
-                System.out.println("merv.properties -> merv.execution.parallel value should be true/false. no other value required.");
-            }
-            if(!parallelFlag){
-                TestSuitePatchRequest testSuiteReq =  new TestSuitePatchRequest();
-                testSuiteReq.setSuiteStatus("COMPLETED");
+            boolean parallelFlag = false;
+            if(mervProp.containsKey("merv.execution.parallel")){
                 try {
-                    client.patchTestSuite(suiteId, testSuiteReq);
-                }catch (MervClientException e){
-                    System.out.println("issue in suite status update " +e.getMessage());
+                    parallelFlag = Boolean.parseBoolean(mervProp.getProperty("merv.execution.parallel").toLowerCase());
+                    System.out.println("merv.properties successfully loaded");
+                }catch (Exception e){
+                    System.out.println("merv.properties -> merv.execution.parallel value should be true/false. no other value required.");
+                }
+                if(!parallelFlag){
+                    TestSuitePatchRequest testSuiteReq =  new TestSuitePatchRequest();
+                    testSuiteReq.setSuiteStatus("COMPLETED");
+                    try {
+                        client.patchTestSuite(suiteId, testSuiteReq);
+                    }catch (MervClientException e){
+                        System.out.println("issue in suite status update " +e.getMessage());
                     }
                 }
             }
@@ -116,14 +140,14 @@ public class MervCucumberHandler implements ConcurrentEventListener {
                 throw new MervClientException("merv.properties file not available in project root.");
             }
             mervProp.load(new FileInputStream(merv_property));
-            
+
             if (!isMervEnabled()) {
                 // Initialize local test suite storage
                 localTestSuite = new LocalTestSuite();
                 localTestSuite.setTitle(mervProp.getProperty("merv.regression_suite", "Test Execution Report"));
                 localTestSuite.setStartTime(new Date());
                 localTestSuite.setTestCases(new ArrayList<>());
-                
+
                 // Create report folder structure immediately so screenshots can be saved
                 try {
                     // Get report folder from merv.properties, default to "reports" in project root
@@ -132,21 +156,23 @@ public class MervCucumberHandler implements ConcurrentEventListener {
                     if (!reportsDir.exists()) {
                         reportsDir.mkdirs();
                     }
-                    
+
                     // Generate folder name with format "DD-MM-YYYY HH-MM-SS Merv-Report" (using hyphens instead of colons for file system compatibility)
                     SimpleDateFormat folderDateFormat = new SimpleDateFormat("dd-MM-yyyy HH-mm-ss");
                     String folderName = folderDateFormat.format(new Date()) + " Merv-Report";
                     String reportFolderPath = baseReportPath + folderName + File.separator;
-                    
+
                     // Create main report folder
                     File reportFolder = new File(reportFolderPath);
                     if (!reportFolder.exists()) {
                         reportFolder.mkdirs();
                     }
-                    
+
                     // Set current report folder path for screenshot storage
                     currentReportFolderPath = reportFolderPath;
-                    
+                    initializeLocalRuntimeReporting(reportFolderPath);
+                    refreshReportsIndexListing();
+
                     System.out.println("Merv is disabled. Reports will be generated locally.");
                     System.out.println("Report folder created: " + reportFolderPath);
                 } catch (Exception e) {
@@ -154,26 +180,26 @@ public class MervCucumberHandler implements ConcurrentEventListener {
                 }
                 return;
             }
-            
+
             // Check if API key is provided, otherwise use username/password
             String apiKey = mervProp.getProperty("merv.api_key");
             String server = mervProp.getProperty("merv.server");
             String username = mervProp.getProperty("merv.username");
             String password = mervProp.getProperty("merv.password");
-            
+
             if (apiKey != null && !apiKey.trim().isEmpty()) {
                 // Use API key authentication
                 client = new MervClient(server, apiKey.trim(), true);
                 System.out.println("Using API key authentication");
-            } else if (username != null && password != null && 
-                      !username.trim().isEmpty() && !password.trim().isEmpty()) {
+            } else if (username != null && password != null &&
+                    !username.trim().isEmpty() && !password.trim().isEmpty()) {
                 // Use username/password authentication (existing behavior)
                 client = new MervClient(server, username, password);
                 System.out.println("Using username/password authentication");
             } else {
                 throw new MervClientException("Either merv.api_key or (merv.username and merv.password) must be configured in merv.properties");
             }
-            
+
             // Store client in static variable for static method access (shared across threads)
             sharedClient = client;
             try {
@@ -231,10 +257,11 @@ public class MervCucumberHandler implements ConcurrentEventListener {
                 }else{
                     localTestCase.setStatus("PASSED");
                 }
+                persistLocalRuntimeSnapshot(false);
             }
             return;
         }
-        
+
         // Use finishTestCase which automatically calculates status based on test steps
         // and sets the end time. This is the recommended approach.
         if (activeTestId != null) {
@@ -258,29 +285,30 @@ public class MervCucumberHandler implements ConcurrentEventListener {
                 localTestCase.setStatus("IN_PROGRESS");
                 localTestCase.setStartTime(new Date());
                 localTestCase.setTestSteps(new ArrayList<>());
-                
+
                 try {
                     String SystemName = InetAddress.getLocalHost().getHostName();
                     localTestCase.setExecutionMachine(SystemName);
                 } catch (Exception e) {
                     System.out.println(e.getMessage());
                 }
-                
+
                 if(mervProp.containsKey("merv_testManagement_prefix")){
                     String prefix = mervProp.getProperty("merv_testManagement_prefix");
                     localTestCase.setTestManagementId(testcase.getTestCase().getTags().stream()
-                        .filter(e -> e.startsWith(prefix)).collect(Collectors.toList()));
+                            .filter(e -> e.startsWith(prefix)).collect(Collectors.toList()));
                 }
-                
+
                 activeTestId = localTestCase.getId();
                 localTestCases.put(activeTestId, localTestCase);
                 if (localTestSuite != null) {
                     localTestSuite.getTestCases().add(localTestCase);
                 }
                 threadLocalActiveTestCaseId.set(activeTestId);
+                persistLocalRuntimeSnapshot(false);
                 return;
             }
-            
+
             TestCaseRequest mervTest = new TestCaseRequest();
             mervTest.setTestSuiteId(suiteId);
             mervTest.setTestcaseName(testcase.getTestCase().getName());
@@ -312,7 +340,7 @@ public class MervCucumberHandler implements ConcurrentEventListener {
         // Always create step normally (step can be skipped later during execution)
         if(teststep.getTestStep() != null && teststep.getTestStep() instanceof PickleStepTestStep){
             PickleStepTestStep step = (PickleStepTestStep)teststep.getTestStep();
-            
+
             if (!isMervEnabled()) {
                 // Create local test step
                 LocalTestStep localStep = new LocalTestStep();
@@ -320,19 +348,20 @@ public class MervCucumberHandler implements ConcurrentEventListener {
                 localStep.setTeststepName(step.getStep().getText());
                 localStep.setStatus("IN_PROGRESS");
                 localStep.setStartTime(new Date());
-                
+
                 activeStepId = localStep.getId();
                 localTestSteps.put(activeStepId, localStep);
-                
+
                 if (activeTestId != null && localTestCases.containsKey(activeTestId)) {
                     localTestCases.get(activeTestId).getTestSteps().add(localStep);
                 }
-                
+
                 threadLocalActiveStepId.set(activeStepId);
                 threadLocalCurrentStepIsSkipped.set(false);
+                persistLocalRuntimeSnapshot(false);
                 return;
             }
-            
+
             TestStepRequest mervStep = new TestStepRequest();
             mervStep.setTeststepName(step.getStep().getText());
             mervStep.setStatus("IN_PROGRESS");
@@ -363,18 +392,18 @@ public class MervCucumberHandler implements ConcurrentEventListener {
                 if (localStep == null) {
                     return;
                 }
-                
+
                 localStep.setEndTime(new Date());
-                
+
                 // Check if this step was marked to be skipped during execution
                 Boolean skipStep = threadLocalSkipNextStep.get();
                 if (skipStep != null && skipStep) {
                     Boolean viewInReport = threadLocalSkipStepViewInReport.get();
-                    
+
                     // Reset the skip flags
                     threadLocalSkipNextStep.remove();
                     threadLocalSkipStepViewInReport.remove();
-                    
+
                     if (viewInReport == null || !viewInReport) {
                         // Delete the step from local storage
                         if (activeTestId != null && localTestCases.containsKey(activeTestId)) {
@@ -388,13 +417,14 @@ public class MervCucumberHandler implements ConcurrentEventListener {
                         localStep.setStatus("SKIPPED");
                     }
                     threadLocalCurrentStepIsSkipped.remove();
+                    persistLocalRuntimeSnapshot(false);
                     return;
                 }
-                
+
                 // Normal step finish (not skipped)
                 PickleStepTestStep step = (PickleStepTestStep)teststep.getTestStep();
                 System.out.println(teststep.getResult().getStatus());
-                
+
                 if(teststep.getResult().getStatus() == Status.FAILED) {
                     localStep.setStatus("FAILED");
                     if (teststep.getResult().getError() != null) {
@@ -414,11 +444,12 @@ public class MervCucumberHandler implements ConcurrentEventListener {
                 }else if(teststep.getResult().getStatus() == Status.PASSED){
                     localStep.setStatus("PASSED");
                 }
-                
+
                 // Clear all flags for next step
                 threadLocalCurrentStepIsSkipped.remove();
                 threadLocalSkipNextStep.remove();
                 threadLocalSkipStepViewInReport.remove();
+                persistLocalRuntimeSnapshot(false);
                 return;
             }
 
@@ -498,12 +529,12 @@ public class MervCucumberHandler implements ConcurrentEventListener {
     public static org.teche.merv.client.dto.FileAttachmentResponse attachFile(File file, String description) throws MervClientException {
         if (!isMervEnabled()) {
             // When Merv is disabled, save file to report folder
-            UUID stepId = threadLocalActiveStepId.get();
+            UUID stepId = resolveLocalAttachmentStepId();
             if (stepId == null) {
                 System.err.println("Merv is disabled. No active test step found. File will not be saved.");
                 return null;
             }
-            
+
             // Save file to report folder
             String savedFilePath = saveFileToReportFolder(file, description);
             if (savedFilePath != null) {
@@ -516,10 +547,30 @@ public class MervCucumberHandler implements ConcurrentEventListener {
                     localStep.getScreenshots().add(savedFilePath);
                 }
                 System.out.println("File saved to report folder: " + savedFilePath);
+                // Persist runtime data so live report can pick up newly attached files.
+                if (localTestSuite != null) {
+                    LocalTestSuite suite = localTestSuite;
+                    try {
+                        Map<String, Object> jsonReport = new LinkedHashMap<>();
+                        jsonReport.put("testSuite", suite);
+                        jsonReport.put("exportDate", new Date().toString());
+                        jsonReport.put("version", "1.0");
+                        jsonReport.put("running", true);
+                        jsonReport.put("lastActivityMillis", System.currentTimeMillis());
+                        String json = objectMapper.writeValueAsString(jsonReport);
+                        String jsonFolderPath = currentReportFolderPath + "json" + File.separator;
+                        File jsonFolder = new File(jsonFolderPath);
+                        if (!jsonFolder.exists()) {
+                            jsonFolder.mkdirs();
+                        }
+                        FileUtils.writeFile(jsonFolderPath + "merv-report.json", json);
+                    } catch (Exception ignored) {
+                    }
+                }
             }
             return null;
         }
-        
+
         MervClient client = sharedClient;
         UUID stepId = threadLocalActiveStepId.get();
 
@@ -532,6 +583,26 @@ public class MervCucumberHandler implements ConcurrentEventListener {
         }
 
         return client.uploadFile(stepId, file, description);
+    }
+
+    /**
+     * ThreadLocal step id (set by the Cucumber plugin). If {@code @AfterStep} runs after the plugin
+     * clears it, fall back to the last step of the active test case on this thread.
+     */
+    private static UUID resolveLocalAttachmentStepId() {
+        UUID stepId = threadLocalActiveStepId.get();
+        if (stepId != null) {
+            return stepId;
+        }
+        UUID testCaseId = threadLocalActiveTestCaseId.get();
+        if (testCaseId == null) {
+            return null;
+        }
+        LocalTestCase tc = localTestCases.get(testCaseId);
+        if (tc == null || tc.getTestSteps() == null || tc.getTestSteps().isEmpty()) {
+            return null;
+        }
+        return tc.getTestSteps().get(tc.getTestSteps().size() - 1).getId();
     }
 
     /**
@@ -548,7 +619,7 @@ public class MervCucumberHandler implements ConcurrentEventListener {
         if (!isMervEnabled()) {
             throw new MervClientException("Merv is disabled. File attachments are not supported in local mode. Reports will be generated locally.");
         }
-        
+
         MervClient client = sharedClient;
         UUID stepId = threadLocalActiveStepId.get();
 
@@ -577,7 +648,7 @@ public class MervCucumberHandler implements ConcurrentEventListener {
         if (!isMervEnabled()) {
             throw new MervClientException("Merv is disabled. File attachments are not supported in local mode. Reports will be generated locally.");
         }
-        
+
         MervClient client = sharedClient;
         UUID stepId = threadLocalActiveStepId.get();
 
@@ -618,11 +689,11 @@ public class MervCucumberHandler implements ConcurrentEventListener {
             if (testCaseId == null) {
                 throw new MervClientException("No active test case found. Step creation must be called during an active test case execution.");
             }
-            
+
             if (stepName == null || stepName.trim().isEmpty()) {
                 throw new MervClientException("Step name is required and cannot be empty.");
             }
-            
+
             LocalTestStep localStep = new LocalTestStep();
             localStep.setId(UUID.randomUUID());
             localStep.setTeststepName(stepName);
@@ -633,17 +704,17 @@ public class MervCucumberHandler implements ConcurrentEventListener {
             localStep.setActual(actual);
             localStep.setTestdata(testdata);
             localStep.setPrereq(prereq);
-            
+
             if (localTestCases.containsKey(testCaseId)) {
                 localTestCases.get(testCaseId).getTestSteps().add(localStep);
             }
             localTestSteps.put(localStep.getId(), localStep);
-            
+
             // Return a mock response (since we can't return null and the return type is required)
             // Note: This won't work perfectly, but it allows the code to continue
             throw new MervClientException("Merv is disabled. Steps are being stored locally and will be included in the local report.");
         }
-        
+
         MervClient client = sharedClient;
         UUID testCaseId = getActiveTestCaseId();
 
@@ -742,15 +813,15 @@ public class MervCucumberHandler implements ConcurrentEventListener {
             if (testCaseId == null) {
                 throw new MervClientException("No active test case found. Step creation must be called during an active test case execution.");
             }
-            
+
             if (stepName == null || stepName.trim().isEmpty()) {
                 throw new MervClientException("Step name is required and cannot be empty.");
             }
-            
+
             if (file == null || !file.exists()) {
                 throw new MervClientException("File does not exist: " + (file != null ? file.getPath() : "null"));
             }
-            
+
             LocalTestStep localStep = new LocalTestStep();
             localStep.setId(UUID.randomUUID());
             localStep.setTeststepName(stepName);
@@ -759,15 +830,15 @@ public class MervCucumberHandler implements ConcurrentEventListener {
             localStep.setStartTime(new Date());
             localStep.setTestdata("File: " + file.getName() + " (Type: " + (fileType != null ? fileType.getType() : "unknown") + ")");
             localStep.setPrereq(prereq);
-            
+
             if (localTestCases.containsKey(testCaseId)) {
                 localTestCases.get(testCaseId).getTestSteps().add(localStep);
             }
             localTestSteps.put(localStep.getId(), localStep);
-            
+
             throw new MervClientException("Merv is disabled. Steps are being stored locally and will be included in the local report.");
         }
-        
+
         MervClient client = sharedClient;
         UUID testCaseId = getActiveTestCaseId();
 
@@ -922,7 +993,7 @@ public class MervCucumberHandler implements ConcurrentEventListener {
         if (stepId == null) {
             throw new MervClientException("No active test step found. Method must be called during an active test step execution.");
         }
-        
+
         if (!isMervEnabled()) {
             // When Merv is disabled, get from local storage
             LocalTestStep localStep = localTestSteps.get(stepId);
@@ -931,7 +1002,7 @@ public class MervCucumberHandler implements ConcurrentEventListener {
             }
             throw new MervClientException("Test step not found in local storage.");
         }
-        
+
         MervClient client = sharedClient;
         if (client == null) {
             throw new MervClientException("MervClient is not initialized. Make sure MervCucumberHandler is properly configured.");
@@ -962,7 +1033,7 @@ public class MervCucumberHandler implements ConcurrentEventListener {
         if (testStepName == null || testStepName.trim().isEmpty()) {
             throw new MervClientException("Test step name cannot be null or empty.");
         }
-        
+
         if (!isMervEnabled()) {
             // When Merv is disabled, update local storage
             LocalTestStep localStep = localTestSteps.get(stepId);
@@ -972,7 +1043,7 @@ public class MervCucumberHandler implements ConcurrentEventListener {
             }
             throw new MervClientException("Test step not found in local storage.");
         }
-        
+
         MervClient client = sharedClient;
         if (client == null) {
             throw new MervClientException("MervClient is not initialized. Make sure MervCucumberHandler is properly configured.");
@@ -1014,7 +1085,7 @@ public class MervCucumberHandler implements ConcurrentEventListener {
 
     // Store the report folder path for screenshot storage
     private static volatile String currentReportFolderPath = null;
-    
+
     /**
      * Save file (screenshot) to the current report folder inside a screenshot subfolder
      */
@@ -1022,7 +1093,7 @@ public class MervCucumberHandler implements ConcurrentEventListener {
         if (currentReportFolderPath == null || file == null || !file.exists()) {
             return null;
         }
-        
+
         try {
             // Create screenshot subfolder in report folder if it doesn't exist
             String screenshotFolderPath = currentReportFolderPath + "screenshot" + File.separator;
@@ -1030,7 +1101,7 @@ public class MervCucumberHandler implements ConcurrentEventListener {
             if (!screenshotFolder.exists()) {
                 screenshotFolder.mkdirs();
             }
-            
+
             // Generate unique filename
             String originalFileName = file.getName();
             String extension = "";
@@ -1038,22 +1109,236 @@ public class MervCucumberHandler implements ConcurrentEventListener {
             if (lastDot > 0) {
                 extension = originalFileName.substring(lastDot);
             }
-            
+
             SimpleDateFormat dateFormat = new SimpleDateFormat("yyyyMMdd_HHmmss_SSS");
             String timestamp = dateFormat.format(new Date());
             String fileName = "screenshot_" + timestamp + extension;
             String filePath = screenshotFolderPath + fileName;
-            
+
             // Copy file to screenshot folder
-            java.nio.file.Files.copy(file.toPath(), new File(filePath).toPath(), 
-                java.nio.file.StandardCopyOption.REPLACE_EXISTING);
-            
+            java.nio.file.Files.copy(file.toPath(), new File(filePath).toPath(),
+                    java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+
             // Return relative path from report folder (including screenshot subfolder)
             return "screenshot" + File.separator + fileName;
         } catch (Exception e) {
             System.err.println("Error saving file to report folder: " + e.getMessage());
             return null;
         }
+    }
+
+    /**
+     * Initialize runtime report assets (live HTML + initial JSON snapshot).
+     */
+    private void initializeLocalRuntimeReporting(String reportFolderPath) {
+        try {
+            String jsonFolderPath = reportFolderPath + "json" + File.separator;
+            String htmlFolderPath = reportFolderPath + "html" + File.separator;
+            new File(jsonFolderPath).mkdirs();
+            new File(htmlFolderPath).mkdirs();
+
+            generateLiveHtmlReport(htmlFolderPath + "merv-report-live.html");
+            persistLocalRuntimeSnapshot(false);
+            System.out.println("Live runtime report initialized: " + htmlFolderPath + "merv-report-live.html");
+        } catch (Exception e) {
+            System.err.println("Error initializing live runtime report: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Persist current local execution state so live HTML can read realtime status.
+     */
+    private void persistLocalRuntimeSnapshot(boolean completed) {
+        if (currentReportFolderPath == null || localTestSuite == null) {
+            return;
+        }
+        synchronized (localReportLock) {
+            try {
+                String jsonFolderPath = currentReportFolderPath + "json" + File.separator;
+                File jsonFolder = new File(jsonFolderPath);
+                if (!jsonFolder.exists()) {
+                    jsonFolder.mkdirs();
+                }
+
+                Map<String, Object> jsonReport = new LinkedHashMap<>();
+                jsonReport.put("testSuite", localTestSuite);
+                jsonReport.put("exportDate", new Date().toString());
+                jsonReport.put("version", "1.0");
+                jsonReport.put("running", !completed);
+                jsonReport.put("lastActivityMillis", System.currentTimeMillis());
+
+                String json = objectMapper.writeValueAsString(jsonReport);
+                FileUtils.writeFile(jsonFolderPath + "merv-report.json", json);
+            } catch (Exception e) {
+                System.err.println("Error persisting runtime snapshot: " + e.getMessage());
+            }
+        }
+    }
+
+    /**
+     * Generate live HTML that polls JSON periodically and renders latest runtime data.
+     */
+    private void generateLiveHtmlReport(String filePath) throws Exception {
+        StringBuilder html = new StringBuilder();
+        html.append("<!DOCTYPE html>\n");
+        html.append("<html><head><meta charset=\"UTF-8\"><title>Merv Live Report</title>\n");
+        html.append("<style>");
+        html.append(":root{--merv-grad:").append(MERV_REPORT_GRADIENT_CSS).append(";--sidebar-bg:#f2f3f5;--sidebar-border:#e6e8ec;--nav-text:#4a4a4a;--nav-muted:#6b6b6b;--nav-active-bg:#fdeaea;--nav-active-text:#c20000;}");
+        html.append("html{scroll-behavior:smooth;}");
+        html.append("body{font-family:Arial,sans-serif;margin:0;padding:0;background:#fafafa;color:#333;}");
+        html.append(".main-wrapper{display:flex;min-height:100vh;}");
+        html.append(".sidebar{width:300px;background:var(--sidebar-bg);color:var(--nav-text);padding:20px 16px;overflow-y:auto;position:fixed;height:100vh;box-shadow:1px 0 0 var(--sidebar-border);box-sizing:border-box;}");
+        html.append(".sidebar-brand{margin-bottom:20px;padding-bottom:18px;border-bottom:1px solid var(--sidebar-border);text-align:center;}");
+        html.append(".brand-logo{max-width:180px;height:auto;display:block;margin:0 auto;}");
+        html.append(".sidebar-local-label{margin:12px 0 0;padding:0;font-size:13px;font-weight:700;color:var(--nav-active-text);letter-spacing:.04em;text-align:center;}");
+        html.append(".sidebar-search{margin-bottom:16px;}");
+        html.append(".sidebar-search input{width:100%;padding:10px 12px;border:1px solid #ddd;border-radius:6px;background:#fff;color:#333;font-size:14px;box-sizing:border-box;}");
+        html.append(".sidebar-search input::placeholder{color:#999;}.sidebar-search input:focus{outline:2px solid rgba(233,1,1,.25);border-color:#e90101;}");
+        html.append(".sidebar-filters{margin-bottom:16px;display:flex;gap:6px;flex-wrap:wrap;}");
+        html.append(".filter-btn{flex:1;min-width:56px;padding:8px 10px;border:1px solid #ddd;border-radius:6px;background:#fff;color:var(--nav-text);font-size:11px;cursor:pointer;}");
+        html.append(".filter-btn.active{background:var(--merv-grad);color:#fff;border-color:transparent;font-weight:700;}");
+        html.append(".sidebar h2{color:#333;margin-top:0;margin-bottom:10px;font-size:14px;font-weight:700;letter-spacing:.02em;}");
+        html.append(".sidebar-item{padding:12px 12px;margin:4px 0;border-radius:6px;cursor:pointer;border-left:4px solid transparent;background:#eceff3;transition:background .15s;}");
+        html.append(".sidebar-item:hover{background:#e3e7ec;}");
+        html.append(".sidebar-item.passed:not(.active),.sidebar-item.failed:not(.active),.sidebar-item.skipped:not(.active),.sidebar-item.in_progress:not(.active){border-left-color:transparent;}");
+        html.append(".sidebar-item.active{background:#eceff3;border-left-color:#e90101;box-shadow:none;}");
+        html.append(".sidebar-item-top{display:flex;align-items:center;justify-content:space-between;gap:10px;}");
+        html.append(".sidebar-item-name{font-weight:600;color:#222;font-size:14px;}");
+        html.append(".sidebar-status-tag{font-size:10px;font-weight:700;letter-spacing:.04em;padding:2px 8px;border-radius:999px;background:#dfe4ea;color:#111;text-transform:uppercase;white-space:nowrap;}");
+        html.append(".sidebar-status-tag.pass{background:#e8f5e9;color:#1b5e20;}.sidebar-status-tag.fail{background:#ffebee;color:#b71c1c;}.sidebar-status-tag.skip{background:#fff8e1;color:#e65100;}.sidebar-status-tag.active{background:#e3f2fd;color:#0d47a1;}");
+        html.append(".sidebar-item.active .sidebar-item-name,.sidebar-item.active .sidebar-status-tag{color:#222;font-weight:600;}");
+        html.append(".content-area{margin-left:300px;flex:1;padding:20px;}");
+        html.append(".report-toolbar{margin-bottom:14px;padding-bottom:12px;border-bottom:1px solid #eee;}");
+        html.append(".local-dash{color:#c20000;font-weight:600;text-decoration:none;font-size:14px;}");
+        html.append(".local-dash:hover{text-decoration:underline;}");
+        html.append(".container{max-width:1200px;margin:0 auto;background:#fff;padding:24px;border-radius:10px;box-shadow:0 2px 12px rgba(0,0,0,.08);}");
+        html.append("h1{color:#222;border-bottom:4px solid #c20000;padding-bottom:12px;margin-top:0;}");
+        html.append(".live-banner{margin:0 0 14px;font-size:12px;color:#666;min-height:1em;}");
+        html.append(".report-run-meta{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin:18px 0 20px;}");
+        html.append(".report-run-meta-item{background:#fafbfc;border:1px solid #e8eaed;border-radius:10px;padding:16px 18px;min-width:0;display:flex;flex-direction:column;gap:8px;box-shadow:0 1px 2px rgba(0,0,0,.04);}");
+        html.append(".report-run-meta-item.report-run-meta-duration{border-color:rgba(194,0,0,.22);background:linear-gradient(145deg,#fff 0%,#fff8f7 55%,#fafbfc 100%);}");
+        html.append(".report-run-meta-label{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.1em;color:#888;}");
+        html.append(".report-run-meta-value{font-size:18px;font-weight:600;color:#1a1a1a;line-height:1.45;word-break:break-word;}");
+        html.append(".report-run-meta-item.report-run-meta-duration .report-run-meta-value{color:#c20000;font-weight:700;}");
+        html.append(".chart-collapsible{margin:0 0 20px 0;border:1px solid #e0e0e0;border-radius:10px;background:#fafafa;overflow:hidden;}");
+        html.append(".chart-collapsible-head{display:flex;align-items:center;gap:10px;padding:12px 16px;cursor:pointer;user-select:none;background:linear-gradient(180deg,#fff,#f5f5f5);border-bottom:1px solid #e8e8e8;font-weight:700;font-size:14px;color:#333;}");
+        html.append(".chart-collapsible-head:hover{background:#f0f0f0;}");
+        html.append(".chart-collapsible-head .chart-caret{display:inline-block;font-size:10px;color:#c20000;transition:transform .2s ease;}");
+        html.append(".chart-collapsible-head.collapsed .chart-caret{transform:rotate(-90deg);}");
+        html.append(".chart-collapsible-body{padding:18px;}");
+        html.append(".chart-collapsible-body.collapsed{display:none;}");
+        html.append(".stats-section{display:flex;flex-wrap:wrap;gap:20px;align-items:flex-start;}");
+        html.append(".stats-left-col{flex:0 0 40%;max-width:40%;min-width:260px;}");
+        html.append(".stats-right-col{flex:1 1 55%;min-width:280px;}");
+        html.append("@media(max-width:900px){.stats-left-col,.stats-right-col{flex:1 1 100%;max-width:100%;}}");
+        html.append(".stat-row-4{display:flex;flex-direction:row;gap:8px;margin-bottom:16px;}");
+        html.append(".stat-row-4 .stat-card{flex:1;min-width:0;padding:12px 6px;}");
+        html.append(".stat-row-4 .stat-card h3{font-size:10px;line-height:1.2;hyphens:auto;word-wrap:break-word;}");
+        html.append(".stat-card{background-color:#fff;border-radius:8px;text-align:center;box-shadow:0 2px 4px rgba(0,0,0,.08);border:1px solid #eee;}");
+        html.append("a.stat-card{text-decoration:none;color:inherit;display:block;cursor:pointer;}");
+        html.append("a.stat-card:hover{box-shadow:0 4px 10px rgba(0,0,0,.12);border-color:#ddd;}");
+        html.append(".stat-card h3{margin:0 0 6px 0;color:#666;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.03em;line-height:1.2;}");
+        html.append(".stat-card .stat-value{font-size:22px;font-weight:700;color:#333;line-height:1.1;}");
+        html.append(".stat-card.total .stat-value{color:#c20000;}");
+        html.append(".stat-card.passed .stat-value{color:#4CAF50;}.stat-card.failed .stat-value{color:#f44336;}.stat-card.skipped .stat-value{color:#FF9800;}");
+        html.append(".pie-chart-container{text-align:center;background:#fff;padding:14px;border-radius:8px;box-shadow:0 2px 4px rgba(0,0,0,.06);border:1px solid #eee;}");
+        html.append(".pie-legend{display:flex;justify-content:center;gap:16px;margin-top:12px;flex-wrap:wrap;}");
+        html.append(".pie-legend-item{display:flex;align-items:center;gap:6px;}");
+        html.append(".pie-legend-color{width:14px;height:14px;border-radius:3px;flex-shrink:0;}");
+        html.append(".pie-legend-label{font-size:12px;color:#333;}");
+        html.append(".failure-reasons-panel{background:#fff;border:1px solid #eee;border-radius:8px;padding:14px 16px;box-shadow:0 2px 4px rgba(0,0,0,.06);max-height:420px;overflow:auto;}");
+        html.append(".failure-reasons-panel h3{margin:0 0 12px 0;font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:#c20000;}");
+        html.append(".failure-reason-empty{color:#888;font-size:13px;margin:0;}");
+        html.append("a.failure-reason-row{text-decoration:none;color:inherit;display:flex;}");
+        html.append(".failure-reason-row{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;padding:10px 8px;border-bottom:1px solid #f0f0f0;cursor:pointer;border-radius:6px;margin:0 -4px;}");
+        html.append(".failure-reason-row:last-child{border-bottom:none;}");
+        html.append(".failure-reason-row:hover{background:#fff5f5;}");
+        html.append(".failure-reason-text{flex:1;min-width:0;font-size:13px;color:#333;line-height:1.35;word-break:break-word;}");
+        html.append(".failure-reason-count{flex-shrink:0;font-weight:700;font-size:13px;color:#f44336;min-width:2em;text-align:right;}");
+        html.append(".screenshot-movie-jump{margin:6px 0 14px 0;font-size:13px;}");
+        html.append(".screenshot-movie-jump a{color:#c20000;font-weight:600;text-decoration:none;border-bottom:1px solid rgba(194,0,0,.35);}");
+        html.append(".screenshot-movie-jump a:hover{border-bottom-color:#c20000;}");
+        html.append(".screenshot-movie{margin:18px 0 22px;padding:16px 18px;background:linear-gradient(180deg,#2a2a2a 0%,#1a1a1a 100%);border-radius:10px;border:1px solid #404040;scroll-margin-top:20px;}");
+        html.append(".screenshot-movie-title{margin:0 0 4px 0;color:#fff;font-size:13px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;}");
+        html.append(".screenshot-movie-hint{margin:0 0 12px 0;color:#888;font-size:11px;}");
+        html.append(".screenshot-movie-stage{width:100%;max-width:880px;margin:0 auto;background:#000;border-radius:8px;overflow:hidden;aspect-ratio:16/10;display:flex;align-items:center;justify-content:center;min-height:160px;}");
+        html.append(".screenshot-movie-img{max-width:100%;max-height:100%;width:auto;height:auto;object-fit:contain;cursor:pointer;}");
+        html.append(".screenshot-movie-bar{display:flex;justify-content:space-between;align-items:center;margin-top:12px;padding:0 4px;color:#aaa;font-size:12px;}");
+        html.append(".screenshot-movie-counter{font-variant-numeric:tabular-nums;font-weight:600;color:#ccc;}");
+        html.append(".screenshot-movie-controls{display:flex;justify-content:center;align-items:center;gap:10px;margin:4px 0 10px;flex-wrap:wrap;}");
+        html.append(".screenshot-movie-btn{min-width:42px;height:42px;padding:0 10px;border-radius:8px;border:1px solid #555;background:#333;color:#fff;font-size:17px;cursor:pointer;line-height:1;display:inline-flex;align-items:center;justify-content:center;}");
+        html.append(".screenshot-movie-btn:hover:not(:disabled){background:#444;border-color:#c20000;}");
+        html.append(".screenshot-movie-btn:disabled{opacity:.35;cursor:not-allowed;}");
+        html.append(".test-case-content{display:none;}.test-case-content.active{display:block;}");
+        html.append(".step-logs{margin-top:10px;}.step-logs p{color:#333;font-weight:700;margin-bottom:8px;}");
+        html.append(".log-container{background:#f5f5f5;border:1px solid #ddd;border-radius:4px;padding:10px;max-height:400px;overflow-y:auto;font-family:'Courier New',monospace;font-size:12px;}");
+        html.append(".log-line{padding:3px 0;border-bottom:1px solid #eee;white-space:pre-wrap;word-wrap:break-word;}");
+        html.append(".log-line:last-child{border-bottom:none;}");
+        html.append(".log-info{color:#333;}.log-error{color:#d32f2f;font-weight:700;background:#ffebee;padding:2px 5px;border-radius:2px;}");
+        html.append(".log-warn{color:#f57c00;background:#fff3e0;padding:2px 5px;border-radius:2px;}.log-debug{color:#616161;}");
+        html.append(".test-case{margin:15px 0;padding:15px;border-left:4px solid #ddd;background-color:#f9f9f9;color:#333;}.test-case.passed{border-left-color:#4CAF50;}.test-case.failed{border-left-color:#f44336;}.test-case.skipped{border-left-color:#FF9800;}.test-case.in_progress{border-left-color:#2196F3;}");
+        html.append(".test-step{margin:8px 0;padding:8px;background-color:#fff;border-radius:3px;color:#333;}.test-step.passed{border-left:3px solid #4CAF50;}.test-step.failed{border-left:3px solid #f44336;}.test-step.skipped{border-left:3px solid #FF9800;}.test-step.in_progress{border-left:3px solid #2196F3;}");
+        html.append(".error{color:#f44336;font-size:.9em;margin-top:5px;background-color:#ffebee;padding:8px;border-radius:3px;border-left:3px solid #f44336;}");
+        html.append(".screenshots{margin-top:10px;}.screenshot{margin:10px 0;}.screenshot img{display:block;max-width:800px;margin:10px 0;border:1px solid #ddd;border-radius:4px;cursor:pointer;}");
+        html.append(".status-pill{display:inline-block;padding:4px 12px;border-radius:20px;background:").append(MERV_REPORT_GRADIENT_CSS).append(";color:#fff;font-size:11px;font-weight:700;margin-left:8px;text-transform:uppercase;letter-spacing:.04em;}");
+        html.append(".status-pill.aborted{background:#6c757d!important;}");
+        html.append("</style></head><body>");
+        html.append("<div class='main-wrapper'><div class='sidebar'>");
+        html.append("<div class='sidebar-brand'><img class='brand-logo' src='").append(MERV_REPORT_LOGO_URL).append("' alt='Merv'><p class='sidebar-local-label'>Merv Local</p></div>");
+        html.append("<div class='sidebar-search'><input type='text' id='testcase-search' placeholder='Search test cases...' onkeyup='searchTestCases()'></div>");
+        html.append("<div class='sidebar-filters'>");
+        html.append("<button class='filter-btn active' data-status='all' onclick=\"filterByStatus('all')\">All</button>");
+        html.append("<button class='filter-btn' data-status='passed' onclick=\"filterByStatus('passed')\">Pass</button>");
+        html.append("<button class='filter-btn' data-status='failed' onclick=\"filterByStatus('failed')\">Fail</button>");
+        html.append("<button class='filter-btn' data-status='skipped' onclick=\"filterByStatus('skipped')\">Skip</button>");
+        html.append("</div><h2>Test Cases</h2><div id='sidebar-list'></div></div>");
+        html.append("<div class='content-area'><div class='container'>");
+        html.append("<div class='report-toolbar'><a class='local-dash' href='../../index.html'>Local Dashboard</a></div>");
+        html.append("<h1 id='suite-title'>Merv Live Runtime Report <span id='run-state' class='status-pill'>RUNNING</span></h1>");
+        html.append("<p id='live-banner' class='live-banner'></p>");
+        html.append("<div class=\"chart-collapsible\"><div class=\"chart-collapsible-head\" id=\"chart-block-head\" role=\"button\" tabindex=\"0\" aria-expanded=\"true\" onclick=\"toggleChartBlock()\" onkeydown=\"if(event.key==='Enter'||event.key===' '){event.preventDefault();toggleChartBlock();}\"><span class=\"chart-caret\" aria-hidden=\"true\">&#9660;</span><span>Summary &amp; charts</span></div>");
+        html.append("<div class=\"chart-collapsible-body\" id=\"chart-block-body\"><div class=\"stats-section\"><div class=\"stats-left-col\">");
+        html.append("<div class=\"stat-row-4\"><a href=\"#\" class=\"stat-card total\" style=\"background:white;\" onclick=\"return filterShowAllTestCases();\" title=\"Show all test cases in the sidebar\"><h3>Total</h3><div id=\"total-count\" class=\"stat-value\">0</div></a>");
+        html.append("<div class=\"stat-card passed\"><h3>Passed</h3><div id=\"passed-count\" class=\"stat-value\">0</div></div>");
+        html.append("<div class=\"stat-card failed\"><h3>Failed</h3><div id=\"failed-count\" class=\"stat-value\">0</div></div>");
+        html.append("<div class=\"stat-card skipped\"><h3>Skipped</h3><div id=\"skipped-count\" class=\"stat-value\">0</div></div></div>");
+        html.append("<div class=\"pie-chart-container\"><canvas id=\"pieChart\" width=\"300\" height=\"300\" data-passed=\"0\" data-failed=\"0\" data-skipped=\"0\"></canvas>");
+        html.append("<div class=\"pie-legend\"><span class=\"pie-legend-item\"><span class=\"pie-legend-color\" style=\"background:#4CAF50\"></span><span id=\"leg-p\" class=\"pie-legend-label\">Passed (0)</span></span>");
+        html.append("<span class=\"pie-legend-item\"><span class=\"pie-legend-color\" style=\"background:#f44336\"></span><span id=\"leg-f\" class=\"pie-legend-label\">Failed (0)</span></span>");
+        html.append("<span class=\"pie-legend-item\"><span class=\"pie-legend-color\" style=\"background:#FF9800\"></span><span id=\"leg-k\" class=\"pie-legend-label\">Skipped (0)</span></span></div></div></div>");
+        html.append("<div class=\"stats-right-col\"><div class=\"failure-reasons-panel\" id=\"failure-reasons-panel\"><h3>Failure reasons</h3><p class=\"failure-reason-empty\">No failures yet.</p></div></div></div></div></div>");
+        html.append("<div class=\"report-run-meta\" role=\"group\" aria-label=\"Run timing\">");
+        html.append("<div class=\"report-run-meta-item\"><span class=\"report-run-meta-label\">Start</span><span class=\"report-run-meta-value\" id=\"run-meta-start\">\u2014</span></div>");
+        html.append("<div class=\"report-run-meta-item\"><span class=\"report-run-meta-label\">End</span><span class=\"report-run-meta-value\" id=\"run-meta-end\">\u2014</span></div>");
+        html.append("<div class=\"report-run-meta-item report-run-meta-duration\"><span class=\"report-run-meta-label\">Duration</span><span class=\"report-run-meta-value\" id=\"run-meta-duration\">\u2014</span></div>");
+        html.append("</div>");
+        html.append("<div id='testcase-content'></div></div></div></div>");
+        html.append("<script>");
+        html.append("function e(s){return String(s||'').replace(/[&<>\\\"']/g,function(c){return({'&':'&amp;','<':'&lt;','>':'&gt;','\\\"':'&quot;',\"'\":'&#39;'})[c];});}");
+        html.append("function c(v){return String(v||'').toLowerCase();}");
+        html.append("var currentFilter='all';var currentSearch='';var selectedId='';var latestData=null;var pollTimer=null;");
+        html.append("var STALE_MS=").append(LOCAL_RUN_STALE_AFTER_MS).append(";");
+        html.append("function lastActivityMs(d){var n=d&&d.lastActivityMillis;if(typeof n==='number'&&n>0)return n;var p=Date.parse(String((d&&d.exportDate)||''));return isNaN(p)?0:p;}");
+        html.append("function isStaleAborted(d){if(!d||d.running!==true)return false;if(d.aborted===true)return true;var la=lastActivityMs(d);if(la<=0)return false;return Date.now()-la>STALE_MS;}");
+        html.append("function stopPolling(){if(pollTimer!==null){clearInterval(pollTimer);pollTimer=null;}}");
+        html.append("function statusClass(st){var x=c(st);return x==='passed'||x==='failed'||x==='skipped'||x==='in_progress'?x:'in_progress';}");
+        html.append("function statusTag(st){var x=c(st);if(x==='passed')return{txt:'PASS',cls:'pass'};if(x==='failed')return{txt:'FAIL',cls:'fail'};if(x==='skipped')return{txt:'SKIP',cls:'skip'};return{txt:'ACTIVE',cls:'active'};}");
+        html.append("function drawPieChart(passed,failed,skipped){var canvas=document.getElementById('pieChart');if(!canvas)return;var ctx=canvas.getContext('2d');var w=canvas.width,h=canvas.height,cx=w/2,cy=h/2,r=Math.min(w,h)*0.36;ctx.clearRect(0,0,w,h);var total=passed+failed+skipped;if(total===0){ctx.fillStyle='#eee';ctx.beginPath();ctx.arc(cx,cy,r,0,2*Math.PI);ctx.fill();return;}var start=-Math.PI/2;var pa=(passed/total)*2*Math.PI,fa=(failed/total)*2*Math.PI,ka=(skipped/total)*2*Math.PI;if(passed>0){ctx.beginPath();ctx.moveTo(cx,cy);ctx.arc(cx,cy,r,start,start+pa);ctx.closePath();ctx.fillStyle='#4CAF50';ctx.fill();start+=pa;}if(failed>0){ctx.beginPath();ctx.moveTo(cx,cy);ctx.arc(cx,cy,r,start,start+fa);ctx.closePath();ctx.fillStyle='#f44336';ctx.fill();start+=fa;}if(skipped>0){ctx.beginPath();ctx.moveTo(cx,cy);ctx.arc(cx,cy,r,start,start+ka);ctx.closePath();ctx.fillStyle='#FF9800';ctx.fill();}ctx.beginPath();ctx.arc(cx,cy,r,0,2*Math.PI);ctx.strokeStyle='#fff';ctx.lineWidth=2;ctx.stroke();}");
+        html.append("function parseTs(v){if(v==null||v===undefined)return null;if(typeof v==='number'){var n=v;return new Date(n>1e11?n:n*1000);}if(typeof v==='string'){var s=new Date(v);return isNaN(s.getTime())?null:s;}if(typeof v==='object'&&v){if(typeof v.time==='number')return new Date(v.time);if(Array.isArray(v)&&v.length>=3)return new Date(v[0],(v[1]||1)-1,v[2]||1,v[3]||0,v[4]||0,v[5]||0);}var t=new Date(v);return isNaN(t.getTime())?null:t;}");
+        html.append("function fmtHms(ms){var d=new Date(ms);function z(x){return(x<10?'0':'')+x;}return z(d.getHours())+':'+z(d.getMinutes())+':'+z(d.getSeconds());}");
+        html.append("function floor5s(t){return Math.floor(t/5000)*5000;}");
+        html.append("function drawTrendChart(tc,suite,running){try{var SLOT=5000;var canvas=document.getElementById('trendChart');if(!canvas)return;var ctx=canvas.getContext('2d');if(!ctx)return;var W=canvas.width,H=canvas.height;if(W<10||H<10)return;ctx.clearRect(0,0,W,H);var padL=40,padR=8,padT=4,padB=40,pw=W-padL-padR,ph=H-padT-padB;var passC={},failC={};(tc||[]).forEach(function(row){var et=parseTs(row.endTime);if(!et)return;var bk=floor5s(et.getTime());var st=String(row.status||'').toUpperCase();if(st==='PASSED')passC[bk]=(passC[bk]||0)+1;else if(st==='FAILED')failC[bk]=(failC[bk]||0)+1;});var suiteStart=suite&&parseTs(suite.startTime);var nowMs=Date.now();var minMs=null,maxMs=null;if(suiteStart)minMs=floor5s(suiteStart.getTime());function upd(ms){if(minMs==null||ms<minMs)minMs=ms;if(maxMs==null||ms>maxMs)maxMs=ms;}Object.keys(passC).forEach(function(k){upd(+k);});Object.keys(failC).forEach(function(k){upd(+k);});if(minMs==null){minMs=floor5s(nowMs);maxMs=minMs;}if(maxMs==null)maxMs=minMs;var curSlot=floor5s(nowMs);if(running&&curSlot>maxMs)maxMs=curSlot;if(maxMs<minMs)maxMs=minMs;var buckets=[];for(var m=minMs;m<=maxMs;m+=SLOT)buckets.push({t:m,p:passC[m]||0,f:failC[m]||0});if(buckets.length>180)buckets=buckets.slice(-180);var n=buckets.length;if(n===0){buckets.push({t:minMs,p:0,f:0});n=1;}var peaks=buckets.map(function(bk){return Math.max(bk.p,bk.f);});var maxY=Math.max(1,peaks.length?Math.max.apply(null,peaks):0);function xCenter(i){return padL+(n<=1?pw/2:(i/(n-1))*pw);}function yVal(v){return padT+ph-(v/maxY)*ph;}ctx.strokeStyle='#ddd';ctx.lineWidth=1;ctx.setLineDash([3,4]);var yTicks=4,yi,xi;for(yi=0;yi<=yTicks;yi++){var yy=padT+(yi/yTicks)*ph;ctx.beginPath();ctx.moveTo(padL,yy);ctx.lineTo(padL+pw,yy);ctx.stroke();}var xStep=Math.max(1,Math.ceil(n/8));for(xi=0;xi<n;xi+=xStep){var xx=xCenter(xi);ctx.beginPath();ctx.moveTo(xx,padT);ctx.lineTo(xx,padT+ph);ctx.stroke();}ctx.setLineDash([]);ctx.strokeStyle='#333';ctx.beginPath();ctx.moveTo(padL,padT+ph);ctx.lineTo(padL+pw,padT+ph);ctx.stroke();ctx.beginPath();ctx.moveTo(padL,padT);ctx.lineTo(padL,padT+ph);ctx.stroke();var slotW=pw/Math.max(n,1);var gw=Math.min(slotW*0.85,36);var barW=Math.max(2,(gw-4)/2);buckets.forEach(function(bk,idx){var cx=xCenter(idx),x0=cx-gw/2,y0=padT+ph;if(bk.p>0){var y1=yVal(bk.p);ctx.fillStyle='#4CAF50';ctx.fillRect(x0,y1,barW,y0-y1);}if(bk.f>0){var y2=yVal(bk.f);ctx.fillStyle='#f44336';ctx.fillRect(x0+barW+4,y2,barW,y0-y2);}});ctx.fillStyle='#555';ctx.font='11px Arial';ctx.textAlign='right';ctx.textBaseline='middle';for(yi=0;yi<=yTicks;yi++){var yv=Math.round((yTicks-yi)*(maxY/yTicks));var yy2=padT+(yi/yTicks)*ph;ctx.fillText(String(yv),padL-4,yy2);}ctx.fillStyle='#444';ctx.font='9px Arial';ctx.textAlign='right';ctx.textBaseline='top';for(xi=0;xi<n;xi+=xStep){var lbl=fmtHms(buckets[xi].t);var xx2=xCenter(xi);ctx.save();ctx.translate(xx2,padT+ph+4);ctx.rotate(-Math.PI/5);ctx.fillText(lbl,0,0);ctx.restore();}var tPass=buckets.reduce(function(a,bk){return a+bk.p;},0),tFail=buckets.reduce(function(a,bk){return a+bk.f;},0);var el=document.getElementById('trend-meta');if(el)el.textContent=tPass+' pass · '+tFail+' fail in window · '+n+' × 5s bucket(s)'+(running?' · refresh 5s':'');}catch(err){var em=document.getElementById('trend-meta');if(em)em.textContent='Trend chart could not render: '+(err&&err.message?err.message:String(err));}}");
+        html.append("function renderSidebar(testCases){var h='';testCases.forEach(function(t,i){var id='tc-'+i;var cls=statusClass(t.status);var tg=statusTag(t.status);h+='<div class=\"sidebar-item '+cls+(selectedId===id?' active':'')+'\" data-id=\"'+id+'\" data-status=\"'+cls+'\"><div class=\"sidebar-item-top\"><div class=\"sidebar-item-name\">'+e(t.testcaseName||'N/A')+'</div><span class=\"sidebar-status-tag '+tg.cls+'\">'+tg.txt+'</span></div></div>';});document.getElementById('sidebar-list').innerHTML=h;bindSidebarEvents();applySidebarFilters();}");
+        html.append("function renderSelectedCase(testCases){if(!testCases.length){document.getElementById('testcase-content').innerHTML='<p>No runtime data yet.</p>';return;}if(!selectedId||!document.querySelector('[data-id=\"'+selectedId+'\"]')){selectedId='tc-0';}var idx=parseInt(selectedId.replace('tc-',''),10);var t=testCases[idx]||testCases[0];var cls=statusClass(t.status);var h='<div class=\"test-case '+cls+'\">';h+='<h3>'+e(t.testcaseName||'N/A')+'</h3>';h+='<p><strong>Status:</strong> '+e(t.status||'IN_PROGRESS')+'</p>';if(t.failureReason){h+='<div class=\"error\"><strong>Error:</strong> '+e(t.failureReason)+'</div>';}if(t.tags&&t.tags.length){h+='<p><strong>Tags:</strong> '+e(t.tags.join(', '))+'</p>';}var steps=t.testSteps||[];if(steps.length){h+='<h4>Test Steps:</h4>';steps.forEach(function(st){var sc=statusClass(st.status);h+='<div class=\"test-step '+sc+'\"><p><strong>'+e(st.teststepName||'Step')+'</strong> - '+e(st.status||'IN_PROGRESS')+'</p>';if(st.errorMessage){h+='<div class=\"error\">'+e(st.errorMessage)+'</div>';}if(st.screenshots&&st.screenshots.length){h+='<div class=\"screenshots\"><p><strong>Screenshots:</strong></p>';st.screenshots.forEach(function(ss){var p=('../'+String(ss||'')).replace(/\\\\/g,'/');h+='<div class=\"screenshot\"><img src=\"'+e(p)+'\" alt=\"Screenshot\" onclick=\"window.open(this.src,\\'_blank\\')\"><p style=\"font-size:.85em;color:#666;\">'+e(ss)+'</p></div>';});h+='</div>';}h+='</div>';});}h+='</div>';document.getElementById('testcase-content').innerHTML=h;}");
+        html.append("function applySidebarFilters(){var items=document.querySelectorAll('#sidebar-list .sidebar-item');items.forEach(function(it){var nm=(it.querySelector('.sidebar-item-name')||{}).textContent||'';var st=it.getAttribute('data-status')||'all';var okSearch=nm.toLowerCase().indexOf(currentSearch)>=0;var okFilter=(currentFilter==='all'||st===currentFilter);it.style.display=(okSearch&&okFilter)?'block':'none';});}");
+        html.append("function bindSidebarEvents(){var items=document.querySelectorAll('#sidebar-list .sidebar-item');items.forEach(function(it){it.onclick=function(){selectedId=it.getAttribute('data-id');renderSelectedCase((latestData&&latestData.testSuite&&latestData.testSuite.testCases)||[]);renderSidebar((latestData&&latestData.testSuite&&latestData.testSuite.testCases)||[]);};});}");
+        html.append("document.getElementById('testcase-search').addEventListener('input',function(ev){currentSearch=(ev.target.value||'').toLowerCase();applySidebarFilters();});");
+        html.append("document.querySelectorAll('.filter-btn').forEach(function(btn){btn.addEventListener('click',function(){document.querySelectorAll('.filter-btn').forEach(function(b){b.classList.remove('active');});btn.classList.add('active');currentFilter=btn.getAttribute('data-status')||'all';applySidebarFilters();});});");
+        html.append("function render(d){latestData=d||{};if(!d||!d.testSuite){document.getElementById('meta').innerText='No runtime data yet';return;}var s=d.testSuite,tc=s.testCases||[];var p=0,f=0,k=0;tc.forEach(function(t){if(t.status==='PASSED')p++;else if(t.status==='FAILED')f++;else if(t.status==='SKIPPED')k++;});var abortedStale=isStaleAborted(d);var effectiveRun=d.running===true&&!abortedStale;var stLbl=abortedStale?'ABORTED':(d.running?'RUNNING':'COMPLETED');var stExtra=abortedStale?' aborted':'';document.getElementById('suite-title').innerHTML=e(s.title||'Merv Live Runtime Report')+' <span id=\"run-state\" class=\"status-pill'+stExtra+'\">'+stLbl+'</span>';if(abortedStale){document.getElementById('meta').innerText='Aborted — no report updates for 1 min (build may have stopped). Test cases: '+tc.length;}else if(d.running){document.getElementById('meta').innerText='Live · Last update: '+new Date().toLocaleString()+' | Test cases: '+tc.length;}else{document.getElementById('meta').innerText='Execution completed. '+((d.exportDate)?('Snapshot: '+d.exportDate+'. '):'')+'Test cases: '+tc.length;}document.getElementById('total-count').innerText=tc.length;document.getElementById('passed-count').innerText=p;document.getElementById('failed-count').innerText=f;document.getElementById('skipped-count').innerText=k;document.getElementById('leg-p').textContent='Passed ('+p+')';document.getElementById('leg-f').textContent='Failed ('+f+')';document.getElementById('leg-k').textContent='Skipped ('+k+')';drawPieChart(p,f,k);drawTrendChart(tc,s,effectiveRun);renderSidebar(tc);renderSelectedCase(tc);if(!effectiveRun){stopPolling();}}");
+        html.append("async function load(){try{var r=await fetch('../json/merv-report.json?ts='+Date.now());if(!r.ok){return;}var d=await r.json();render(d);}catch(err){}}");
+        html.append("pollTimer=setInterval(load,5000);load();");
+        html.append("</script></body></html>");
+        FileUtils.writeFile(filePath, html.toString());
     }
 
     /**
@@ -1064,48 +1349,537 @@ public class MervCucumberHandler implements ConcurrentEventListener {
             System.out.println("No test suite data available for local report generation.");
             return;
         }
-        
+
         localTestSuite.setEndTime(new Date());
-        
+
         try {
             // Use the existing report folder path (created during suite start)
             if (currentReportFolderPath == null) {
                 System.err.println("Report folder path not set. Cannot generate reports.");
                 return;
             }
-            
+
             String reportFolderPath = currentReportFolderPath;
-            
+
             // Create json subfolder
             String jsonFolderPath = reportFolderPath + "json" + File.separator;
             File jsonFolder = new File(jsonFolderPath);
             if (!jsonFolder.exists()) {
                 jsonFolder.mkdirs();
             }
-            
+
             // Create html subfolder
             String htmlFolderPath = reportFolderPath + "html" + File.separator;
             File htmlFolder = new File(htmlFolderPath);
             if (!htmlFolder.exists()) {
                 htmlFolder.mkdirs();
             }
-            
+
             // Generate HTML report in html folder
             String htmlReportPath = htmlFolderPath + "merv-report.html";
             generateHtmlReport(htmlReportPath, reportFolderPath);
             System.out.println("HTML report generated: " + htmlReportPath);
-            
+
             // Generate JSON report in json folder
             String jsonReportPath = jsonFolderPath + "merv-report.json";
             generateJsonReport(jsonReportPath);
             System.out.println("JSON report generated: " + jsonReportPath);
-            
+
             System.out.println("Merv Report generation completed: " + reportFolderPath);
-            
+            refreshReportsIndexListing();
+
         } catch (Exception e) {
             System.err.println("Error generating local reports: " + e.getMessage());
             e.printStackTrace();
         }
+    }
+
+    /**
+     * Rewrite {@code reports/index.html} listing every run folder that contains a final HTML report.
+     */
+    private static void refreshReportsIndexListing() {
+        try {
+            String base = MervConfig.getReportFolder();
+            if (base == null || base.trim().isEmpty()) {
+                return;
+            }
+            writeReportsIndexHtml(base.trim());
+        } catch (Exception e) {
+            System.err.println("Could not update reports index: " + e.getMessage());
+        }
+    }
+
+    private static String urlPathEncode(String folderName) {
+        return URLEncoder.encode(folderName, StandardCharsets.UTF_8).replace("+", "%20");
+    }
+
+    private static String jsDoubleQuoted(String s) {
+        if (s == null) {
+            return "\"\"";
+        }
+        return "\"" + s.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n").replace("\r", "") + "\"";
+    }
+
+    /**
+     * Port for {@link ReportsDeleteServer}; embedded in generated {@code reports/index.html} for Delete.
+     */
+    private static int readReportsDeleteApiPort() {
+        return ReportsDeleteServer.resolvePort(new String[0]);
+    }
+
+    /**
+     * Deletes one run folder under the configured Merv report root (name must be a single path segment).
+     *
+     * @return {@code null} on success, or a short error message for the client
+     */
+    public static String deleteReportRunFolder(String folderName) {
+        if (folderName == null || (folderName = folderName.trim()).isEmpty()) {
+            return "Missing folder name";
+        }
+        if (folderName.contains("..") || folderName.indexOf('/') >= 0 || folderName.indexOf('\\') >= 0) {
+            return "Invalid folder name";
+        }
+        try {
+            String base = MervConfig.getReportFolder();
+            if (base == null || base.trim().isEmpty()) {
+                return "Report folder not configured";
+            }
+            Path baseDir = Paths.get(base.trim()).toAbsolutePath().normalize();
+            if (!Files.isDirectory(baseDir)) {
+                return "Report root not found";
+            }
+            Path baseReal = baseDir.toRealPath();
+            Path target = baseReal.resolve(folderName);
+            if (!Files.exists(target) || !Files.isDirectory(target)) {
+                return "Report folder not found";
+            }
+            Path targetReal = target.toRealPath();
+            if (!targetReal.startsWith(baseReal)) {
+                return "Invalid path";
+            }
+            deleteReportDirectoryRecursive(targetReal);
+            refreshReportsIndexListing();
+            return null;
+        } catch (Exception e) {
+            String msg = e.getMessage();
+            return msg == null || msg.isEmpty() ? "Delete failed" : msg;
+        }
+    }
+
+    private static void deleteReportDirectoryRecursive(Path root) throws IOException {
+        try (Stream<Path> walk = Files.walk(root)) {
+            walk.sorted(Comparator.reverseOrder()).forEach(p -> {
+                try {
+                    Files.deleteIfExists(p);
+                } catch (IOException e) {
+                    throw new UncheckedIOException(e);
+                }
+            });
+        } catch (UncheckedIOException e) {
+            throw e.getCause();
+        }
+    }
+
+    private static final class ReportSummary {
+        String title = "Test execution";
+        String env = "Local";
+        String release = "—";
+        String sprint = "—";
+        String tagsDisplay = "";
+        List<String> tagPills = new ArrayList<>();
+        int total;
+        int pass;
+        int fail;
+        int skip;
+        boolean runningFromJson;
+    }
+
+    private static final class ReportIndexEntry {
+        final String folderName;
+        final long lastModified;
+        final long sortKey;
+        final boolean hasLive;
+        final boolean hasFinal;
+        final ReportSummary summary;
+
+        ReportIndexEntry(String folderName, long lastModified, long sortKey, boolean hasLive, boolean hasFinal, ReportSummary summary) {
+            this.folderName = folderName;
+            this.lastModified = lastModified;
+            this.sortKey = sortKey;
+            this.hasLive = hasLive;
+            this.hasFinal = hasFinal;
+            this.summary = summary;
+        }
+    }
+
+    private static ReportSummary loadReportSummaryFromJson(File jsonFile, boolean hasFinal, boolean hasLive) {
+        ReportSummary s = new ReportSummary();
+        s.runningFromJson = hasLive && !hasFinal;
+        if (!jsonFile.isFile()) {
+            return s;
+        }
+        try {
+            JsonNode root = objectMapper.readTree(jsonFile);
+            if (root.has("running")) {
+                s.runningFromJson = root.path("running").asBoolean(false);
+            }
+            JsonNode suite = root.path("testSuite");
+            String t = suite.path("title").asText(null);
+            if (t != null && !t.isEmpty()) {
+                s.title = t;
+            }
+            JsonNode cases = suite.path("testCases");
+            if (cases.isArray()) {
+                LinkedHashSet<String> tagSet = new LinkedHashSet<>();
+                for (JsonNode tc : cases) {
+                    s.total++;
+                    String st = tc.path("status").asText("");
+                    if ("PASSED".equals(st)) {
+                        s.pass++;
+                    } else if ("FAILED".equals(st)) {
+                        s.fail++;
+                    } else if ("SKIPPED".equals(st)) {
+                        s.skip++;
+                    }
+                    JsonNode tags = tc.path("tags");
+                    if (tags.isArray()) {
+                        for (JsonNode tg : tags) {
+                            String tgStr = tg.asText("");
+                            if (!tgStr.isEmpty() && tagSet.size() < 16) {
+                                tagSet.add(tgStr);
+                            }
+                        }
+                    }
+                }
+                s.tagPills = new ArrayList<>(tagSet);
+                s.tagsDisplay = tagSet.stream().map(String::toLowerCase).collect(Collectors.joining(" "));
+            }
+        } catch (Exception ignored) {
+            // keep defaults
+        }
+        return s;
+    }
+
+    private static String donutConicStyle(int pass, int fail, int skip) {
+        int t = pass + fail + skip;
+        if (t <= 0) {
+            return "background:#e9ecef;";
+        }
+        double pEnd = 360.0 * pass / t;
+        double fEnd = pEnd + 360.0 * fail / t;
+        return String.format(Locale.US,
+                "background:conic-gradient(#28a745 0deg %.6fdeg, #dc3545 %.6fdeg %.6fdeg, #ffc107 %.6fdeg 360deg);",
+                pEnd, pEnd, fEnd, fEnd);
+    }
+
+    private static String relativeTimeAgo(long epochMs) {
+        long diff = Math.max(0L, System.currentTimeMillis() - epochMs);
+        long sec = diff / 1000L;
+        if (sec < 45) {
+            return "just now";
+        }
+        long min = sec / 60L;
+        if (min < 60) {
+            return min == 1 ? "1 min ago" : min + " mins ago";
+        }
+        long hr = min / 60L;
+        if (hr < 24) {
+            return hr == 1 ? "1 hour ago" : hr + " hours ago";
+        }
+        long day = hr / 24L;
+        if (day < 30) {
+            return day == 1 ? "1 day ago" : day + " days ago";
+        }
+        long mo = day / 30L;
+        if (mo < 12) {
+            return mo == 1 ? "1 month ago" : mo + " months ago";
+        }
+        long yr = mo / 12L;
+        return yr == 1 ? "1 year ago" : yr + " years ago";
+    }
+
+    private static void writeReportsIndexHtml(String baseReportPath) throws Exception {
+        String base = baseReportPath.endsWith(File.separator) ? baseReportPath : baseReportPath + File.separator;
+        File root = new File(base);
+        if (!root.isDirectory()) {
+            root.mkdirs();
+        }
+        File[] subs = root.listFiles(f -> f.isDirectory() && !f.getName().startsWith("."));
+        List<ReportIndexEntry> entries = new ArrayList<>();
+        SimpleDateFormat folderTs = new SimpleDateFormat("dd-MM-yyyy HH-mm-ss");
+        if (subs != null) {
+            for (File folder : subs) {
+                File finalReport = new File(folder, "html" + File.separator + "merv-report.html");
+                File liveReport = new File(folder, "html" + File.separator + "merv-report-live.html");
+                boolean hasFinal = finalReport.isFile();
+                boolean hasLive = liveReport.isFile();
+                if (!hasFinal && !hasLive) {
+                    continue;
+                }
+                long lm = folder.lastModified();
+                if (hasFinal) {
+                    lm = Math.max(lm, finalReport.lastModified());
+                }
+                if (hasLive) {
+                    lm = Math.max(lm, liveReport.lastModified());
+                }
+                long sortKey = reportFolderSortKey(folder, folderTs, lm);
+                File jsonFile = new File(folder, "json" + File.separator + "merv-report.json");
+                ReportSummary sum = loadReportSummaryFromJson(jsonFile, hasFinal, hasLive);
+                entries.add(new ReportIndexEntry(folder.getName(), lm, sortKey, hasLive, hasFinal, sum));
+            }
+        }
+        entries.sort((a, b) -> Long.compare(b.sortKey, a.sortKey));
+
+        SimpleDateFormat footFmt = new SimpleDateFormat("dd-MMM-yyyy (EEE) hh:mma", Locale.ENGLISH);
+        String grad = MERV_REPORT_GRADIENT_CSS;
+        String logo = MERV_REPORT_LOGO_URL;
+        int reportsDeletePort = readReportsDeleteApiPort();
+        String deleteApiUrl = "http://127.0.0.1:" + reportsDeletePort + "/api/reports/delete";
+
+        StringBuilder html = new StringBuilder();
+        html.append("<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n");
+        html.append("<meta charset=\"UTF-8\">\n");
+        html.append("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n");
+        html.append("<script>window.MERV_REPORTS_DELETE_API=").append(jsDoubleQuoted(deleteApiUrl)).append(";</script>\n");
+        html.append("<script>window.MERV_REPORT_FOLDERS=");
+        if (entries.isEmpty()) {
+            html.append("[]");
+        } else {
+            html.append("[");
+            for (int fi = 0; fi < entries.size(); fi++) {
+                if (fi > 0) {
+                    html.append(',');
+                }
+                html.append(jsDoubleQuoted(urlPathEncode(entries.get(fi).folderName)));
+            }
+            html.append("]");
+        }
+        html.append(";</script>\n");
+        html.append("<title>Merv — Test Suites</title>\n");
+        html.append("<link rel=\"preconnect\" href=\"https://fonts.googleapis.com\">\n");
+        html.append("<link rel=\"preconnect\" href=\"https://fonts.gstatic.com\" crossorigin>\n");
+        html.append("<link href=\"https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700&display=swap\" rel=\"stylesheet\">\n");
+        html.append("<style>\n");
+        html.append(":root{--merv-red:#e2433a;--merv-grad:").append(grad).append(";--sidebar:#f2f3f5;--border:#e6e8ec;--text:#1a1a1a;--muted:#5c5f66;}\n");
+        html.append("*{box-sizing:border-box;}body{margin:0;font-family:'DM Sans',system-ui,sans-serif;background:#fff;color:var(--text);min-height:100vh;}\n");
+        html.append(".dash{display:flex;min-height:100vh;}\n");
+        html.append(".sidebar{width:260px;background:var(--sidebar);border-right:1px solid var(--border);padding:20px 0 0;flex-shrink:0;position:sticky;top:0;align-self:flex-start;min-height:100vh;display:flex;flex-direction:column;}\n");
+        html.append(".sidebar-brand{text-align:center;padding:0 16px 12px;border-bottom:1px solid var(--border);margin-bottom:0;}\n");
+        html.append(".sidebar-brand img{max-width:140px;height:auto;display:block;margin:0 auto;}\n");
+        html.append(".sidebar-local-label{text-align:center;margin:0;padding:12px 16px 14px;border-bottom:1px solid var(--border);font-size:13px;font-weight:700;color:var(--merv-red);letter-spacing:.04em;}\n");
+        html.append(".nav{margin:8px 0;padding:0 12px;flex:1;min-height:0;}\n");
+        html.append(".sidebar-footer{margin-top:auto;padding:18px 14px 22px;border-top:1px solid var(--border);text-align:center;}\n");
+        html.append(".sidebar-footer a.sidebar-merv-online{display:block;font-size:13px;font-weight:600;color:#0d6efd;text-decoration:none;margin-bottom:14px;}\n");
+        html.append(".sidebar-footer a.sidebar-merv-online:hover{text-decoration:underline;}\n");
+        html.append(".sidebar-powered{margin:0 0 10px;font-size:11px;font-weight:600;color:var(--muted);letter-spacing:.03em;text-transform:uppercase;}\n");
+        html.append(".sidebar-footer a.sidebar-techelliptica{display:inline-block;line-height:0;}\n");
+        html.append(".sidebar-footer a.sidebar-techelliptica img{max-width:150px;height:auto;display:block;margin:0 auto;}\n");
+        html.append(".nav a{display:block;padding:12px 14px;border-radius:8px;color:#4a4a4a;text-decoration:none;font-size:14px;font-weight:500;margin:2px 0;}\n");
+        html.append(".nav a:hover{background:rgba(0,0,0,.04);}\n");
+        html.append(".nav a.active{background:#fdeaea;color:var(--merv-red);font-weight:600;border-left:3px solid var(--merv-red);padding-left:11px;}\n");
+        html.append(".main{flex:1;display:flex;flex-direction:column;min-width:0;background:#fafbfc;}\n");
+        html.append(".topbar{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:16px;padding:18px 28px;background:#fff;border-bottom:1px solid var(--border);}\n");
+        html.append(".search-wrap{flex:1;min-width:200px;max-width:420px;}\n");
+        html.append("#suite-search{width:100%;padding:11px 16px;border:1px solid #ddd;border-radius:10px;font-size:14px;}\n");
+        html.append("#suite-search:focus{outline:2px solid rgba(226,67,54,.2);border-color:var(--merv-red);}\n");
+        html.append(".content{padding:24px 28px 48px;}\n");
+        html.append(".content h2{margin:0 0 18px 0;font-size:1.1rem;font-weight:700;color:#333;}\n");
+        html.append(".suite-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(360px,1fr));gap:20px;}\n");
+        html.append(".suite-card{background:#fff;border:1px solid #e8eaed;border-radius:12px;padding:20px 20px 16px;box-shadow:0 1px 4px rgba(0,0,0,.05);display:flex;flex-direction:column;}\n");
+        html.append(".suite-card.is-latest{box-shadow:0 4px 20px rgba(226,67,54,.12);border-color:rgba(226,67,54,.25);}\n");
+        html.append(".suite-top{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;}\n");
+        html.append(".suite-title-block{flex:1;min-width:0;}\n");
+        html.append(".suite-top .suite-name{margin:0;font-size:1.05rem;font-weight:700;line-height:1.3;word-break:break-word;}\n");
+        html.append(".suite-top .suite-folder{margin:6px 0 0;font-size:12px;color:var(--muted);font-weight:500;line-height:1.35;word-break:break-word;}\n");
+        html.append(".status-badge{font-size:10px;font-weight:700;letter-spacing:.04em;padding:5px 10px;border-radius:4px;color:#fff;text-transform:uppercase;white-space:nowrap;}\n");
+        html.append(".status-badge.done{background:#28a745;}\n");
+        html.append(".status-badge.run{background:#ffc107;color:#212529;}\n");
+        html.append("@keyframes idx-blink-inprogress{0%,100%{opacity:1;}50%{opacity:.32;}}\n");
+        html.append(".status-badge.run{animation:idx-blink-inprogress 1.1s ease-in-out infinite;}\n");
+        html.append(".status-badge.abort{background:#6c757d;color:#fff;animation:none !important;}\n");
+        html.append(".suite-counts{margin:10px 0 0;font-size:13px;color:var(--muted);}\n");
+        html.append(".suite-counts strong{color:#333;font-weight:600;}\n");
+        html.append(".suite-meta{margin:10px 0 0;color:var(--muted);}\n");
+        html.append(".suite-meta-row{display:flex;justify-content:space-between;align-items:flex-start;gap:14px;}\n");
+        html.append(".suite-meta-dl{display:grid;grid-template-columns:auto 1fr;gap:3px 12px;font-size:12px;margin:0;flex:1;min-width:0;}\n");
+        html.append(".suite-meta-dl dt{margin:0;font-weight:600;color:#6b6b6b;}\n");
+        html.append(".suite-meta-dl dd{margin:0;}\n");
+        html.append(".suite-meta-donut{flex-shrink:0;padding-top:2px;}\n");
+        html.append(".suite-meta .donut{position:relative;width:76px;height:76px;border-radius:50%;flex-shrink:0;}\n");
+        html.append(".suite-meta .donut::after{content:'';position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);width:42px;height:42px;background:#fff;border-radius:50%;box-shadow:inset 0 0 0 1px rgba(0,0,0,.04);}\n");
+        html.append(".suite-tags-block{margin-top:10px;padding-top:10px;border-top:1px solid #f0f1f3;}\n");
+        html.append(".suite-tags-label{font-size:10px;font-weight:700;color:#6b6b6b;text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px;display:block;}\n");
+        html.append(".tag-row{display:flex;flex-wrap:wrap;gap:6px;align-content:flex-start;min-height:22px;}\n");
+        html.append(".tag-pill{background:#eef1f4;color:#495057;padding:3px 10px;border-radius:20px;font-size:11px;}\n");
+        html.append(".suite-foot{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:12px;margin-top:auto;padding-top:14px;border-top:1px solid #f0f1f3;}\n");
+        html.append(".suite-when{font-size:12px;color:var(--muted);line-height:1.4;}\n");
+        html.append(".suite-when .rel{display:block;font-size:11px;margin-top:2px;opacity:.85;}\n");
+        html.append(".suite-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap;}\n");
+        html.append(".btn-view{display:inline-flex;align-items:center;padding:8px 14px;border:2px solid #0d6efd;border-radius:8px;color:#0d6efd;font-size:13px;font-weight:600;text-decoration:none;background:#fff;}\n");
+        html.append(".btn-view:hover{background:#f0f7ff;}\n");
+        html.append(".icon-btn{width:36px;height:36px;border:1px solid #dee2e6;border-radius:8px;background:#fff;cursor:pointer;font-size:16px;line-height:1;display:inline-flex;align-items:center;justify-content:center;color:#495057;}\n");
+        html.append(".icon-btn:hover{background:#f8f9fa;border-color:#adb5bd;}\n");
+        html.append(".btn-delete{padding:8px 12px;border-radius:8px;font-size:12px;font-weight:600;cursor:pointer;background:#fff;color:#c82333;border:1px solid #dc3545;}\n");
+        html.append(".btn-delete:hover{background:#fff5f5;}\n");
+        html.append(".btn-delete:disabled{opacity:.5;cursor:not-allowed;}\n");
+        html.append(".empty{max-width:520px;margin:48px auto;text-align:center;padding:40px;color:var(--muted);}\n");
+        html.append(".hint{font-size:12px;color:#888;margin-top:32px;text-align:center;}\n");
+        html.append(".chart-panel{background:#fff;border:1px solid #e8eaed;border-radius:14px;padding:20px 22px;margin-bottom:28px;box-shadow:0 2px 12px rgba(0,0,0,.06);}\n");
+        html.append(".chart-head{display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:10px;margin-bottom:12px;width:100%;}\n");
+        html.append(".chart-head h2{margin:0;font-size:1.08rem;font-weight:700;color:#1a1a1a;letter-spacing:-.02em;}\n");
+        html.append(".chart-live{font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:#28a745;}\n");
+        html.append(".chart-canvas-wrap{height:280px;position:relative;max-width:100%;background:#fff;border-radius:8px;}\n");
+        html.append(".chart-note{margin:14px 0 0;font-size:12px;color:#5c5f66;line-height:1.5;}\n");
+        html.append(".chart-head-inner{display:flex;flex-direction:column;gap:10px;flex:1;min-width:0;}\n");
+        html.append(".chart-head-row{display:flex;flex-wrap:wrap;align-items:flex-start;justify-content:space-between;gap:12px;width:100%;}\n");
+        html.append(".chart-title-wrap{flex:1;min-width:180px;}\n");
+        html.append(".chart-controls{display:flex;flex-wrap:wrap;align-items:center;gap:14px 18px;}\n");
+        html.append(".chart-range-field{display:flex;flex-direction:column;gap:8px;min-width:0;flex:1;}\n");
+        html.append(".chart-range-label{font-size:10px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:#868e96;line-height:1;}\n");
+        html.append(".chart-range-tags{display:flex;flex-wrap:wrap;gap:8px;align-items:center;}\n");
+        html.append(".chart-range-btn{height:25px;margin:0;padding:4px 16px;font-size:12px;font-weight:600;font-family:inherit;line-height:1.2;color:#495057;background:#fff;border:1px solid #d8dce3;border-radius:999px;cursor:pointer;transition:background .15s,border-color .15s,color .15s,box-shadow .15s;box-shadow:0 1px 2px rgba(15,23,42,.04);white-space:nowrap;}\n");
+        html.append(".chart-range-btn:hover{background:#f8f9fa;border-color:#bdc4ce;color:#212529;}\n");
+        html.append(".chart-range-btn:focus{outline:none;box-shadow:0 0 0 3px rgba(194,0,0,.22);}\n");
+        html.append(".chart-range-btn.active{background:linear-gradient(180deg,#fff0f0,#fde8e8);color:#9b0000;border-color:#c20000;box-shadow:0 1px 4px rgba(194,0,0,.18),inset 0 1px 0 rgba(255,255,255,.6);}\n");
+        html.append(".chart-range-btn.active:hover{filter:brightness(0.98);}\n");
+        html.append(".chart-controls .chart-live{flex-shrink:0;padding:8px 14px;border-radius:999px;font-size:10px;letter-spacing:.07em;background:linear-gradient(180deg,#f0fdf4,#e8f5e9);color:#1b5e20;border:1px solid rgba(40,167,69,.35);box-shadow:0 1px 2px rgba(27,94,32,.06);}\n");
+        html.append(".chart-custom-range{display:none;flex-wrap:wrap;align-items:center;gap:12px;padding:14px 16px;background:linear-gradient(165deg,#fafbfc 0%,#f4f5f7 100%);border-radius:12px;border:1px solid #e4e7ec;box-shadow:inset 0 1px 0 rgba(255,255,255,.85);}\n");
+        html.append(".chart-custom-range.visible{display:flex;}\n");
+        html.append(".chart-custom-range label{font-size:12px;color:#495057;display:inline-flex;align-items:center;gap:8px;font-weight:600;}\n");
+        html.append(".chart-custom-range input[type=datetime-local]{padding:9px 12px;border:1px solid #ced4da;border-radius:10px;font-size:13px;background:#fff;box-shadow:0 1px 2px rgba(0,0,0,.03);transition:border-color .15s,box-shadow .15s;}\n");
+        html.append(".chart-custom-range input[type=datetime-local]:focus{outline:none;border-color:#c20000;box-shadow:0 0 0 3px rgba(194,0,0,.12);}\n");
+        html.append(".chart-apply-btn{padding:9px 18px;border-radius:10px;border:1px solid #b80000;background:linear-gradient(180deg,#e90101,#c20000);color:#fff;font-size:12px;font-weight:700;letter-spacing:.03em;cursor:pointer;box-shadow:0 1px 3px rgba(194,0,0,.35);transition:filter .15s,transform .1s;}\n");
+        html.append(".chart-apply-btn:hover{filter:brightness(1.06);}\n");
+        html.append(".chart-apply-btn:active{transform:translateY(1px);}\n");
+        html.append("</style>\n</head>\n<body>\n<div class=\"dash\">\n");
+        html.append("<aside class=\"sidebar\"><div class=\"sidebar-brand\"><img src=\"").append(logo).append("\" alt=\"Merv\"></div>\n");
+        html.append("<p class=\"sidebar-local-label\">Merv-Local</p>\n");
+        html.append("<nav class=\"nav\"><a class=\"active\" href=\"index.html\">Test Suites</a></nav>\n");
+        html.append("<footer class=\"sidebar-footer\">\n");
+        html.append("<a class=\"sidebar-merv-online\" href=\"https://merv.online\" target=\"_blank\" rel=\"noopener noreferrer\">Merv-Server Report</a>\n");
+        html.append("<p class=\"sidebar-powered\">Powered By TechElliptica</p>\n");
+        html.append("<a class=\"sidebar-techelliptica\" href=\"https://www.techelliptica.com\" target=\"_blank\" rel=\"noopener noreferrer\" title=\"TechElliptica\">");
+        html.append("<img src=\"https://techelliptica.com/images/logo.png\" alt=\"TechElliptica\"></a>\n");
+        html.append("</footer></aside>\n<div class=\"main\">\n");
+        html.append("<header class=\"topbar\"><div class=\"search-wrap\"><input type=\"search\" id=\"suite-search\" placeholder=\"Search test suites…\" autocomplete=\"off\"></div></header>\n<div class=\"content\">\n");
+
+        if (entries.isEmpty()) {
+            html.append("<div class=\"empty\"><p><strong>No reports yet.</strong></p><p>Run your Cucumber suite with Merv local mode to generate a dated report folder here.</p></div>");
+        } else {
+            html.append("<section class=\"chart-panel\" aria-label=\"Execution trend\">\n");
+            html.append("<div class=\"chart-head\"><div class=\"chart-head-inner\">\n");
+            html.append("<div class=\"chart-head-row\"><div class=\"chart-title-wrap\"><h2 id=\"chart-title\">Test cases executed — last 1 hour</h2></div>\n");
+            html.append("<div class=\"chart-controls\"><div class=\"chart-range-field\">");
+            html.append("<div class=\"chart-range-tags\" role=\"group\" aria-labelledby=\"chart-range-label\">\n");
+            html.append("<button type=\"button\" class=\"chart-range-btn active\" data-range=\"1h\" aria-pressed=\"true\">1 hour</button>\n");
+            html.append("<button type=\"button\" class=\"chart-range-btn\" data-range=\"6h\" aria-pressed=\"false\">6 hours</button>\n");
+            html.append("<button type=\"button\" class=\"chart-range-btn\" data-range=\"1d\" aria-pressed=\"false\">1 day</button>\n");
+            html.append("<button type=\"button\" class=\"chart-range-btn\" data-range=\"1w\" aria-pressed=\"false\">1 week</button>\n");
+            html.append("<button type=\"button\" class=\"chart-range-btn\" data-range=\"2w\" aria-pressed=\"false\">2 weeks</button>\n");
+            html.append("<button type=\"button\" class=\"chart-range-btn\" data-range=\"1m\" aria-pressed=\"false\">1 month</button>\n");
+            html.append("<button type=\"button\" class=\"chart-range-btn\" data-range=\"custom\" aria-pressed=\"false\">Custom</button></div></div>\n");
+            html.append("<span id=\"chart-live\" class=\"chart-live\">Live · 5s</span></div></div>\n");
+            html.append("<div id=\"chart-custom-wrap\" class=\"chart-custom-range\"><label>From <input type=\"datetime-local\" id=\"chart-custom-from\"></label>\n");
+            html.append("<label>To <input type=\"datetime-local\" id=\"chart-custom-to\"></label>\n");
+            html.append("<button type=\"button\" id=\"chart-custom-apply\" class=\"chart-apply-btn\">Apply</button></div></div></div>\n");
+            html.append("<div class=\"chart-canvas-wrap\"><canvas id=\"suiteExecChart\" aria-label=\"Pass and fail counts over time\"></canvas></div>\n");
+            html.append("<p class=\"chart-note\" id=\"chart-note\"><strong>Pass</strong> (green area) and <strong>fail</strong> (red line) &mdash; test cases <strong>finished per minute</strong> in the selected range, from <strong>all listed runs</strong></p>\n");
+            html.append("</section>\n");
+            html.append("<h2>Test Suites</h2><div class=\"suite-grid\" id=\"suite-grid\">\n");
+            for (int i = 0; i < entries.size(); i++) {
+                ReportIndexEntry e = entries.get(i);
+                String enc = urlPathEncode(e.folderName);
+                String viewHref = enc + "/html/" + (e.hasFinal ? "merv-report.html" : "merv-report-live.html");
+                String copyPath = e.folderName.replace('\\', '/') + "/html/" + (e.hasFinal ? "merv-report.html" : "merv-report-live.html");
+                boolean completed = e.hasFinal;
+                ReportSummary s = e.summary;
+                int tot = s.total > 0 ? s.total : (s.pass + s.fail + s.skip);
+                if (tot <= 0 && (e.hasFinal || e.hasLive)) {
+                    tot = s.pass + s.fail + s.skip;
+                }
+                String dataQ = (e.folderName + " " + s.title + " " + s.tagsDisplay).toLowerCase(Locale.ROOT);
+                html.append("<article class=\"suite-card");
+                if (i == 0) {
+                    html.append(" is-latest");
+                }
+                html.append("\" data-q=\"").append(escapeHtml(dataQ)).append("\" data-card-idx=\"").append(i).append("\" data-json=\"").append(enc).append("/json/merv-report.json\" data-folder-name=\"").append(escapeHtml(e.folderName)).append("\">\n");
+                html.append("<div class=\"suite-top\"><div class=\"suite-title-block\"><h3 class=\"suite-name\">").append(escapeHtml(s.title)).append("</h3>\n");
+                html.append("<p class=\"suite-folder\">").append(escapeHtml(e.folderName)).append("</p></div>\n");
+                if (completed) {
+                    html.append("<span class=\"status-badge done\">Completed</span>");
+                } else {
+                    html.append("<span class=\"status-badge run\">In progress</span>");
+                }
+                html.append("</div>\n");
+                html.append("<div class=\"suite-counts\"><strong>Total</strong> <span class=\"cnt-total\">").append(tot).append("</span>");
+                html.append(" &nbsp;|&nbsp; <strong>Pass</strong> <span class=\"cnt-pass\">").append(s.pass).append("</span>");
+                html.append(" &nbsp;|&nbsp; <strong>Fail</strong> <span class=\"cnt-fail\">").append(s.fail).append("</span>");
+                html.append("<span class=\"cnt-skip-seg\"").append(s.skip > 0 ? "" : " style=\"display:none\"").append("> &nbsp;|&nbsp; <strong>Skip</strong> <span class=\"cnt-skip\">").append(s.skip).append("</span></span>");
+                html.append("</div>\n");
+                html.append("<div class=\"suite-meta\"><div class=\"suite-meta-row\">\n");
+                html.append("<dl class=\"suite-meta-dl\"><dt>Environment</dt><dd>").append(escapeHtml(s.env)).append("</dd>");
+                html.append("<dt>Release</dt><dd>").append(escapeHtml(s.release)).append("</dd>");
+                html.append("<dt>Sprint</dt><dd>").append(escapeHtml(s.sprint)).append("</dd></dl>\n");
+                html.append("<div class=\"suite-meta-donut\"><div class=\"donut\" style=\"").append(donutConicStyle(s.pass, s.fail, s.skip)).append("\" title=\"Pass / Fail / Skip\"></div></div>\n");
+                html.append("</div>\n<div class=\"suite-tags-block\"><div class=\"tag-row\">");
+                if (s.tagPills.isEmpty()) {
+                    html.append("<span class=\"tag-pill tag-pill-empty\" style=\"opacity:.5\">—</span>");
+                } else {
+                    for (String tag : s.tagPills) {
+                        html.append("<span class=\"tag-pill\">").append(escapeHtml(tag)).append("</span>");
+                    }
+                }
+                html.append("</div></div></div>\n");
+                html.append("<div class=\"suite-foot\"><div class=\"suite-when\">");
+                html.append(escapeHtml(footFmt.format(new Date(e.lastModified))));
+                html.append("<span class=\"rel\">").append(escapeHtml(relativeTimeAgo(e.lastModified))).append("</span></div>\n");
+                html.append("<div class=\"suite-actions\">");
+                html.append("<a class=\"btn-view\" href=\"").append(viewHref).append("\">View Cases</a>");
+                html.append("<a class=\"icon-btn\" title=\"Open in new tab\" href=\"").append(viewHref).append("\" target=\"_blank\" rel=\"noopener\">↗</a>");
+                html.append("<button type=\"button\" class=\"btn-delete\" title=\"Delete this report folder\" data-folder=\"").append(escapeHtml(e.folderName)).append("\" onclick=\"deleteReport(this)\">Delete</button>");
+                html.append("</div></div></article>\n");
+            }
+            html.append("</div>\n");
+        }
+
+        html.append("<p class=\"hint\">Tip: serve this folder with a local HTTP server if the browser blocks JSON in live reports. ");
+        html.append("<strong>Delete</strong> needs <code>ReportsDeleteServer</code> on port ").append(reportsDeletePort);
+        html.append(" (override with <code>merv.reports.delete.port</code> in merv.properties). Run: ");
+        html.append("<code>mvn exec:java -Dexec.classpathScope=test -Dexec.mainClass=&quot;org.teche.merv.client.utils.ReportsDeleteServer&quot;</code></p>\n");
+        html.append("</div></div></div>\n");
+        html.append("<script src=\"https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js\" crossorigin=\"anonymous\"></script>\n");
+        html.append("<script>\n");
+        html.append("function copyPath(btn){var p=btn.getAttribute('data-copy');if(!p)return;(navigator.clipboard&&navigator.clipboard.writeText?navigator.clipboard.writeText(p):Promise.reject()).catch(function(){var t=document.createElement('textarea');t.value=p;document.body.appendChild(t);t.select();try{document.execCommand('copy');}finally{document.body.removeChild(t);}});}\n");
+        html.append("function deleteReport(btn){var folder=btn.getAttribute('data-folder');if(!folder)return;if(!confirm('Delete report folder \"'+folder+'\" permanently? This cannot be undone.'))return;var url=window.MERV_REPORTS_DELETE_API||'';if(!url){alert('Delete API is not configured.');return;}btn.disabled=true;fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({folder:folder})}).then(function(r){return r.text().then(function(t){try{return JSON.parse(t);}catch(e){return{ok:false,error:t||'Bad response'};}});}).then(function(j){if(j&&j.ok)location.reload();else{alert((j&&j.error)||'Delete failed');btn.disabled=false;}}).catch(function(){alert('Could not reach the local delete API. From project root run: mvn exec:java -Dexec.classpathScope=test -Dexec.mainClass=\"org.teche.merv.client.utils.ReportsDeleteServer\" (port in merv.properties: merv.reports.delete.port, default 9191).');btn.disabled=false;});}\n");
+        html.append("document.getElementById('suite-search').addEventListener('input',function(){var q=(this.value||'').toLowerCase().trim();document.querySelectorAll('.suite-card').forEach(function(c){var d=c.getAttribute('data-q')||'';c.style.display=!q||d.indexOf(q)>=0?'':'none';});});\n");
+        html.append("(function liveDashboard(){var folders=window.MERV_REPORT_FOLDERS||[];if(!folders.length)return;var STALE_MS=");
+        html.append(LOCAL_RUN_STALE_AFTER_MS);
+        html.append(";var MINUTE=60000,DAY=86400000,POLL=5000;var execBuckets={};var chart=null;var liveEl=document.getElementById('chart-live');var titleEl=document.getElementById('chart-title');var noteEl=document.getElementById('chart-note');var customWrap=document.getElementById('chart-custom-wrap');var customFrom=document.getElementById('chart-custom-from');var customTo=document.getElementById('chart-custom-to');var customApply=document.getElementById('chart-custom-apply');var rangeState={key:'1h',customStart:0,customEnd:0};function setRangeUi(key){document.querySelectorAll('.chart-range-btn').forEach(function(btn){var k=btn.getAttribute('data-range');var on=(k===key);btn.classList.toggle('active',on);btn.setAttribute('aria-pressed',on?'true':'false');});}(function bindRangeTags(){document.querySelectorAll('.chart-range-btn').forEach(function(btn){btn.addEventListener('click',function(){var v=this.getAttribute('data-range');if(v==='custom'){if(customWrap)customWrap.classList.add('visible');if(customFrom&&!customFrom.value){var n=Date.now();if(customTo)customTo.value=msToLocal(n);if(customFrom)customFrom.value=msToLocal(n-DAY);}setRangeUi('custom');return;}if(customWrap)customWrap.classList.remove('visible');rangeState.key=v;setRangeUi(v);pollAll();});});})();function msToLocal(ms){var d=new Date(ms);function p(n){return n<10?'0'+n:''+n;}return d.getFullYear()+'-'+p(d.getMonth()+1)+'-'+p(d.getDate())+'T'+p(d.getHours())+':'+p(d.getMinutes());}function parseTs(v){if(v==null||v===undefined)return null;if(typeof v==='number'){var n=v;return new Date(n>1e11?n:n*1000);}if(typeof v==='string'){var s=new Date(v);return isNaN(s.getTime())?null:s;}if(typeof v==='object'&&v){if(typeof v.time==='number')return new Date(v.time);if(Array.isArray(v)&&v.length>=3)return new Date(v[0],(v[1]||1)-1,v[2]||1,v[3]||0,v[4]||0,v[5]||0);}var t=new Date(v);return isNaN(t.getTime())?null:t;}function getWindow(now){if(rangeState.key==='custom')return{start:rangeState.customStart,end:Math.min(now,rangeState.customEnd),live:false};var ms=0;if(rangeState.key==='1h')ms=60*MINUTE;else if(rangeState.key==='6h')ms=6*60*MINUTE;else if(rangeState.key==='1d')ms=24*60*MINUTE;else if(rangeState.key==='1w')ms=7*DAY;else if(rangeState.key==='2w')ms=14*DAY;else if(rangeState.key==='1m')ms=30*DAY;else ms=60*MINUTE;return{start:now-ms,end:now,live:true};}function bucketMsForRange(key,rangeLen){if(key==='1h')return MINUTE;if(key==='6h')return 5*MINUTE;if(key==='1d')return 15*MINUTE;if(key==='1w'||key==='2w'||key==='1m')return DAY;if(rangeLen<=6*60*MINUTE)return 5*MINUTE;if(rangeLen<=2*DAY)return 15*MINUTE;return DAY;}function aggregateBuckets(snapshots,win,bucketMs){var out={},si,j,row,st,et,tms,bk,d,tc,start=win.start,end=win.end;for(si=0;si<snapshots.length;si++){d=snapshots[si];if(!d||!d.testSuite)continue;tc=d.testSuite.testCases||[];for(j=0;j<tc.length;j++){row=tc[j];st=String(row.status||'').toUpperCase();if(st!=='PASSED'&&st!=='FAILED')continue;et=parseTs(row.endTime);if(!et)continue;tms=et.getTime();if(tms<start||tms>end+MINUTE)continue;bk=Math.floor(tms/bucketMs)*bucketMs;if(!out[bk])out[bk]={pass:0,fail:0};if(st==='PASSED')out[bk].pass++;else out[bk].fail++;}}return out;}function formatTick(t,bucketMs){if(bucketMs>=DAY)return new Date(t).toLocaleDateString([],{month:'short',day:'numeric'});if(bucketMs>=3600000)return new Date(t).toLocaleString([],{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'});return new Date(t).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});}function buildSeries(){var now=Date.now(),win=getWindow(now),rangeLen=Math.max(win.end-win.start,MINUTE),bucketMs=bucketMsForRange(rangeState.key,rangeLen),b0=Math.floor(win.start/bucketMs)*bucketMs,bLast=Math.floor(win.end/bucketMs)*bucketMs,labels=[],passA=[],failA=[],t;for(t=b0;t<=bLast;t+=bucketMs){labels.push(formatTick(t,bucketMs));var b=execBuckets[t]||{pass:0,fail:0};passA.push(b.pass);failA.push(b.fail);}return{labels:labels,passA:passA,failA:failA,bucketMs:bucketMs};}function noteHtml(bucketMs){var txt=bucketMs>=DAY?'calendar day':(bucketMs>=900000?'15-minute':(bucketMs>=300000?'5-minute':'minute'));return '<strong>Pass</strong> (green area) and <strong>fail</strong> (red line) &mdash; test cases <strong>finished per '+txt+'</strong> in the selected range, from <strong>all listed runs</strong>';}function syncChrome(s){if(titleEl){if(rangeState.key==='custom'&&rangeState.customStart>0&&rangeState.customEnd>0){var a=new Date(rangeState.customStart),b=new Date(rangeState.customEnd);titleEl.textContent='Test cases executed — '+a.toLocaleString()+' – '+b.toLocaleString();}else{var T={'1h':'Test cases executed — last 1 hour','6h':'Test cases executed — last 6 hours','1d':'Test cases executed — last 24 hours','1w':'Test cases executed — last 7 days','2w':'Test cases executed — last 14 days','1m':'Test cases executed — last 30 days'};titleEl.textContent=T[rangeState.key]||T['1h'];}}if(noteEl)noteEl.innerHTML=noteHtml(s.bucketMs);}function escHtml(s){return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\"/g,'&quot;');}function donutCss(p,f,k){var t=p+f+k;if(t<=0)return'background:#e9ecef;';var pEnd=360*p/t,fEnd=pEnd+360*f/t;return'background:conic-gradient(#28a745 0deg '+pEnd+'deg, #dc3545 '+pEnd+'deg '+fEnd+'deg, #ffc107 '+fEnd+'deg 360deg);';}function tally(d){var p=0,f=0,k=0,tc=(d&&d.testSuite&&d.testSuite.testCases)||[];tc.forEach(function(t){var s=String(t.status||'').toUpperCase();if(s==='PASSED')p++;else if(s==='FAILED')f++;else if(s==='SKIPPED')k++;});return{pass:p,fail:f,skip:k,total:tc.length};}function tagList(d){var seen={},out=[];(d&&d.testSuite&&d.testSuite.testCases||[]).forEach(function(t){(t.tags||[]).forEach(function(tg){var x=String(tg);if(x&&!seen[x]){seen[x]=1;out.push(x);}});});return out;}function lastActMs(d){var n=d&&d.lastActivityMillis;if(typeof n==='number'&&n>0)return n;var p=Date.parse(String((d&&d.exportDate)||''));return isNaN(p)?0:p;}function markAborted(card){var b=card.querySelector('.status-badge');if(!b)return;b.textContent='Aborted';b.className='status-badge abort';}function updateCard(card,d,enc){if(!card)return;var T=tally(d);var elT=card.querySelector('.cnt-total'),elP=card.querySelector('.cnt-pass'),elF=card.querySelector('.cnt-fail'),elK=card.querySelector('.cnt-skip'),seg=card.querySelector('.cnt-skip-seg');if(elT)elT.textContent=T.total;if(elP)elP.textContent=T.pass;if(elF)elF.textContent=T.fail;if(elK)elK.textContent=T.skip;if(seg)seg.style.display=T.skip>0?'inline':'none';var donut=card.querySelector('.suite-meta .donut');if(donut)donut.setAttribute('style',donutCss(T.pass,T.fail,T.skip));var tags=tagList(d),tagRow=card.querySelector('.suite-tags-block .tag-row');if(tagRow){if(!tags.length)tagRow.innerHTML='<span class=\"tag-pill tag-pill-empty\" style=\"opacity:.5\">—</span>';else tagRow.innerHTML=tags.map(function(t){return'<span class=\"tag-pill\">'+escHtml(t)+'</span>';}).join('');}var fn=card.getAttribute('data-folder-name')||'';var suiteTitleEl=card.querySelector('.suite-top .suite-name');var folderEl=card.querySelector('.suite-top .suite-folder');if(folderEl)folderEl.textContent=fn;if(suiteTitleEl&&d&&d.testSuite){var jst=d.testSuite.title;if(jst!=null&&String(jst)!=='')suiteTitleEl.textContent=String(jst);}var titleText=(suiteTitleEl&&suiteTitleEl.textContent)||'';card.setAttribute('data-q',(titleText+' '+fn+' '+tags.join(' ')).toLowerCase());var live=(d&&d.running===true);var htmlFile=live?'merv-report-live.html':'merv-report.html';var pathSlash=fn.split('\\\\').join('/');var copyBtn=card.querySelector('button[data-copy]');if(copyBtn)copyBtn.setAttribute('data-copy',pathSlash+'/html/'+htmlFile);var viewA=card.querySelector('a.btn-view');var extA=card.querySelector('a.icon-btn[target=\"_blank\"]');if(viewA&&enc)viewA.setAttribute('href',enc+'/html/'+htmlFile);if(extA&&enc)extA.setAttribute('href',enc+'/html/'+htmlFile);var badge=card.querySelector('.status-badge');if(badge){if(d&&d.running===false){badge.textContent='Completed';badge.className='status-badge done';}else if(d&&d.running===true){var la=lastActMs(d);if(la>0&&Date.now()-la>STALE_MS){markAborted(card);}else{badge.textContent='In progress';badge.className='status-badge run';}}}}function updateChartUi(){if(typeof Chart==='undefined')return;var s=buildSeries();syncChrome(s);var ctx=document.getElementById('suiteExecChart');if(!ctx)return;if(!chart){chart=new Chart(ctx,{type:'line',data:{labels:s.labels,datasets:[{label:'Pass',data:s.passA,borderColor:'#28a745',backgroundColor:'rgba(40,167,69,0.22)',fill:true,tension:0.28,pointRadius:3,pointBackgroundColor:'#28a745',borderWidth:2},{label:'Fail',data:s.failA,borderColor:'#dc3545',backgroundColor:'transparent',fill:false,tension:0.25,pointRadius:2,pointBackgroundColor:'#dc3545',borderWidth:2}]},options:{responsive:true,maintainAspectRatio:false,animation:{duration:350},interaction:{mode:'index',intersect:false},plugins:{legend:{position:'top',labels:{color:'#333',font:{size:12,weight:'600'}}}},scales:{x:{grid:{color:'#e9ecef'},ticks:{color:'#495057',maxRotation:0,maxTicksLimit:14},border:{color:'#dee2e6'}},y:{beginAtZero:true,grid:{color:'#e9ecef'},ticks:{color:'#495057',precision:0},border:{color:'#dee2e6'}}}}});}else{chart.data.labels=s.labels;chart.data.datasets[0].data=s.passA;chart.data.datasets[1].data=s.failA;chart.update('none');}}async function pollAll(){var snaps=[],i,r,d,card;for(i=0;i<folders.length;i++){try{r=await fetch(folders[i]+'/json/merv-report.json?ts='+Date.now());if(!r.ok)continue;d=await r.json();snaps.push(d);card=document.querySelector('.suite-card[data-card-idx=\"'+i+'\"]');updateCard(card,d,folders[i]);}catch(err){}}var now=Date.now(),win=getWindow(now),rangeLen=Math.max(win.end-win.start,MINUTE),bucketMs=bucketMsForRange(rangeState.key,rangeLen);execBuckets=aggregateBuckets(snaps,win,bucketMs);updateChartUi();if(liveEl)liveEl.textContent=(rangeState.key==='custom'?'Updated':'Live')+' · '+new Date().toLocaleTimeString();}if(customApply){customApply.addEventListener('click',function(){var fv=customFrom.value,tv=customTo.value;if(!fv||!tv){alert('Please choose both From and To.');return;}var a=new Date(fv),b=new Date(tv);if(isNaN(a.getTime())||isNaN(b.getTime())){alert('Invalid dates.');return;}if(a.getTime()>=b.getTime()){alert('From must be before To.');return;}rangeState.key='custom';rangeState.customStart=a.getTime();rangeState.customEnd=b.getTime();setRangeUi('custom');pollAll();});}pollAll();setInterval(pollAll,POLL);})();\n");
+        html.append("(function autoReloadIndexWhenStale(){var PERIOD=8000;var baseline=null;function fp(html){var n=(html.match(/data-card-idx=/g)||[]).length;return n+'|'+html.length;}async function tick(){try{var u='./index.html?cb='+Date.now();var r=await fetch(u,{cache:'no-store',credentials:'same-origin'});if(!r.ok)return;var t=await r.text();var s=fp(t);if(baseline===null){baseline=s;return;}if(s!==baseline){location.reload();}}catch(e){}}setTimeout(tick,2500);setInterval(tick,PERIOD);})();\n");
+        html.append("</script>\n</body></html>\n");
+
+        FileUtils.writeFile(base + "index.html", html.toString());
+        System.out.println("Reports index updated: " + base + "index.html");
+    }
+
+    /**
+     * Prefer timestamp parsed from folder name ({@code dd-MM-yyyy HH-mm-ss Merv-Report}) so the newest run
+     * is first as soon as the folder exists, not only after the final report file is written.
+     */
+    private static long reportFolderSortKey(File folder, SimpleDateFormat folderTs, long fallbackMillis) {
+        String name = folder.getName();
+        String suffix = " Merv-Report";
+        if (name.endsWith(suffix)) {
+            try {
+                String prefix = name.substring(0, name.length() - suffix.length());
+                Date parsed = folderTs.parse(prefix);
+                return parsed.getTime();
+            } catch (Exception ignored) {
+                // fall through
+            }
+        }
+        return fallbackMillis;
     }
 
     /**
@@ -1118,30 +1892,43 @@ public class MervCucumberHandler implements ConcurrentEventListener {
         html.append("<meta charset=\"UTF-8\">\n");
         html.append("<title>Merv Test Execution Report</title>\n");
         html.append("<style>\n");
-        html.append("body { font-family: Arial, sans-serif; margin: 0; padding: 0; background-color: #f5f5f5; color: #333; }\n");
+        html.append(":root { --merv-grad: ").append(MERV_REPORT_GRADIENT_CSS).append("; --sidebar-bg: #f2f3f5; --sidebar-border: #e6e8ec; --nav-text: #4a4a4a; --nav-muted: #6b6b6b; --nav-active-bg: #fdeaea; --nav-active-text: #c20000; }\n");
+        html.append("html { scroll-behavior: smooth; }\n");
+        html.append("body { font-family: Arial, sans-serif; margin: 0; padding: 0; background-color: #fafafa; color: #333; }\n");
         html.append(".main-wrapper { display: flex; min-height: 100vh; }\n");
-        html.append(".sidebar { width: 300px; background-color: #2c3e50; color: white; padding: 20px; overflow-y: auto; position: fixed; height: 100vh; box-shadow: 2px 0 5px rgba(0,0,0,0.1); }\n");
-        html.append(".sidebar-brand { color: white; font-size: 28px; font-weight: bold; margin-bottom: 20px; padding-bottom: 15px; border-bottom: 2px solid #34495e; text-align: center; }\n");
-        html.append(".sidebar-search { margin-bottom: 20px; }\n");
-        html.append(".sidebar-search input { width: 100%; padding: 10px; border: none; border-radius: 5px; background-color: #34495e; color: white; font-size: 14px; box-sizing: border-box; }\n");
-        html.append(".sidebar-search input::placeholder { color: #95a5a6; }\n");
-        html.append(".sidebar-search input:focus { outline: none; background-color: #3d566e; }\n");
-        html.append(".sidebar-filters { margin-bottom: 20px; display: flex; gap: 5px; flex-wrap: wrap; }\n");
-        html.append(".filter-btn { flex: 1; min-width: 60px; padding: 8px 12px; border: none; border-radius: 5px; background-color: #34495e; color: white; font-size: 12px; cursor: pointer; transition: background-color 0.3s; }\n");
-        html.append(".filter-btn:hover { background-color: #3d566e; }\n");
-        html.append(".filter-btn.active { background-color: #3498db; font-weight: bold; }\n");
-        html.append(".sidebar h2 { color: white; margin-top: 0; margin-bottom: 15px; font-size: 18px; }\n");
-        html.append(".sidebar-item { padding: 12px 15px; margin: 5px 0; background-color: #34495e; border-radius: 5px; cursor: pointer; transition: background-color 0.3s; border-left: 4px solid transparent; }\n");
-        html.append(".sidebar-item:hover { background-color: #3d566e; }\n");
-        html.append(".sidebar-item.active { background-color: #3498db; border-left-color: #2980b9; }\n");
-        html.append(".sidebar-item.passed { border-left-color: #4CAF50; }\n");
-        html.append(".sidebar-item.failed { border-left-color: #f44336; }\n");
-        html.append(".sidebar-item.skipped { border-left-color: #FF9800; }\n");
-        html.append(".sidebar-item-name { font-weight: bold; color: white; margin-bottom: 5px; }\n");
-        html.append(".sidebar-item-status { font-size: 0.85em; color: #ecf0f1; text-transform: uppercase; }\n");
+        html.append(".sidebar { width: 300px; background: var(--sidebar-bg); color: var(--nav-text); padding: 20px 16px; overflow-y: auto; position: fixed; height: 100vh; box-shadow: 1px 0 0 var(--sidebar-border); }\n");
+        html.append(".sidebar-brand { margin-bottom: 20px; padding-bottom: 18px; border-bottom: 1px solid var(--sidebar-border); text-align: center; }\n");
+        html.append(".brand-logo { max-width: 180px; height: auto; display: block; margin: 0 auto; }\n");
+        html.append(".sidebar-local-label { margin: 12px 0 0; padding: 0; font-size: 13px; font-weight: 700; color: var(--nav-active-text); letter-spacing: 0.04em; text-align: center; }\n");
+        html.append(".sidebar-search { margin-bottom: 16px; }\n");
+        html.append(".sidebar-search input { width: 100%; padding: 10px 12px; border: 1px solid #ddd; border-radius: 6px; background-color: #fff; color: #333; font-size: 14px; box-sizing: border-box; }\n");
+        html.append(".sidebar-search input::placeholder { color: #999; }\n");
+        html.append(".sidebar-search input:focus { outline: 2px solid rgba(233,1,1,0.25); border-color: #e90101; }\n");
+        html.append(".sidebar-filters { margin-bottom: 16px; display: flex; gap: 6px; flex-wrap: wrap; }\n");
+        html.append(".filter-btn { flex: 1; min-width: 56px; padding: 8px 10px; border: 1px solid #ddd; border-radius: 6px; background-color: #fff; color: var(--nav-text); font-size: 11px; cursor: pointer; transition: background-color 0.2s, color 0.2s; }\n");
+        html.append(".filter-btn:hover { background-color: #f8f8f8; }\n");
+        html.append(".filter-btn.active { background: var(--merv-grad); color: #fff; border-color: transparent; font-weight: bold; }\n");
+        html.append(".sidebar h2 { color: #333; margin-top: 0; margin-bottom: 10px; font-size: 14px; font-weight: bold; }\n");
+        html.append(".sidebar-item { padding: 12px 12px; margin: 4px 0; border-radius: 6px; cursor: pointer; transition: background-color 0.15s; border-left: 4px solid transparent; background: #eceff3; }\n");
+        html.append(".sidebar-item:hover { background-color: #e3e7ec; }\n");
+        html.append(".sidebar-item.passed:not(.active), .sidebar-item.failed:not(.active), .sidebar-item.skipped:not(.active), .sidebar-item.in_progress:not(.active) { border-left-color: transparent; }\n");
+        html.append(".sidebar-item.active { background: #eceff3; border-left-color: #959494; box-shadow: none; }\n");
+        html.append(".sidebar-item-top { display: flex; align-items: center; justify-content: space-between; gap: 10px; }\n");
+        html.append(".sidebar-item-name { font-weight: 600; color: #222; font-size: 14px; }\n");
+        html.append(".sidebar-status-tag { font-size: 10px; font-weight: 700; letter-spacing: 0.04em; padding: 2px 8px; border-radius: 999px; background: #dfe4ea; color: #111; text-transform: uppercase; white-space: nowrap; }\n");
+        html.append(".sidebar-status-tag.pass { background: #e8f5e9; color: #1b5e20; }\n");
+        html.append(".sidebar-status-tag.fail { background: #ffebee; color: #b71c1c; }\n");
+        html.append(".sidebar-status-tag.skip { background: #fff8e1; color: #e65100; }\n");
+        html.append(".sidebar-status-tag.active { background: #e3f2fd; color: #0d47a1; }\n");
+        html.append(".sidebar-item.active .sidebar-item-name, .sidebar-item.active .sidebar-status-tag { color: #222; font-weight: 600; }\n");
         html.append(".content-area { margin-left: 300px; flex: 1; padding: 20px; }\n");
-        html.append(".container { max-width: 1200px; margin: 0 auto; background-color: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); color: #333; }\n");
-        html.append("h1 { color: #333; border-bottom: 3px solid #4CAF50; padding-bottom: 10px; }\n");
+        html.append(".report-toolbar { margin-bottom: 14px; padding-bottom: 12px; border-bottom: 1px solid #eee; }\n");
+        html.append(".local-dash { color: #c20000; font-weight: 600; text-decoration: none; font-size: 14px; }\n");
+        html.append(".local-dash:hover { text-decoration: underline; }\n");
+        html.append(".container { max-width: 1200px; margin: 0 auto; background-color: white; padding: 24px; border-radius: 10px; box-shadow: 0 2px 12px rgba(0,0,0,0.08); color: #333; }\n");
+        html.append("h1 { color: #222; border-bottom: 4px solid #c20000; padding-bottom: 12px; }\n");
+        html.append(".section-heading { font-size: 14px; letter-spacing: 0.08em; text-transform: uppercase; color: #c20000; margin: 28px 0 12px 0; font-weight: bold; }\n");
+        html.append(".section-heading:first-of-type { margin-top: 8px; }\n");
         html.append("h2 { color: #555; margin-top: 30px; }\n");
         html.append("h3 { color: #333; margin: 0 0 10px 0; }\n");
         html.append("h4 { color: #555; margin: 15px 0 10px 0; }\n");
@@ -1150,10 +1937,10 @@ public class MervCucumberHandler implements ConcurrentEventListener {
         html.append(".summary-card { flex: 1; padding: 15px; border-radius: 5px; text-align: center; }\n");
         html.append(".summary-card h3 { color: white; margin: 0 0 10px 0; font-size: 16px; font-weight: bold; }\n");
         html.append(".summary-card p { color: white; font-weight: bold; }\n");
-        html.append(".total { background-color: #2196F3; color: white; }\n");
-        html.append(".passed { background-color: #4CAF50; color: white; }\n");
-        html.append(".failed { background-color: #f44336; color: white; }\n");
-        html.append(".skipped { background-color: #FF9800; color: white; }\n");
+        html.append(".total { background: var(--merv-grad); color: white; }\n");
+        html.append(".passed { background-color: #eceff3; color: white; }\n");
+        html.append(".failed { background-color: #eceff3; color: white; }\n");
+        html.append(".skipped { background-color: #eceff3; color: white; }\n");
         html.append(".test-case { margin: 15px 0; padding: 15px; border-left: 4px solid #ddd; background-color: #f9f9f9; color: #333; }\n");
         html.append(".test-case h3 { color: #333; margin: 0 0 10px 0; }\n");
         html.append(".test-case p { color: #333; }\n");
@@ -1168,14 +1955,31 @@ public class MervCucumberHandler implements ConcurrentEventListener {
         html.append(".test-step.skipped { border-left: 3px solid #FF9800; }\n");
         html.append(".error { color: #f44336; font-size: 0.9em; margin-top: 5px; background-color: #ffebee; padding: 8px; border-radius: 3px; border-left: 3px solid #f44336; }\n");
         html.append(".error strong { color: #c62828; }\n");
-        html.append(".metadata { color: #666; font-size: 0.9em; margin-top: 10px; }\n");
-        html.append(".metadata p { color: #666; }\n");
-        html.append(".metadata strong { color: #333; }\n");
+        html.append(".report-run-meta { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; margin: 18px 0 26px; }\n");
+        html.append(".report-run-meta-item { background: #fafbfc; border: 1px solid #e8eaed; border-radius: 10px; padding: 16px 18px; min-width: 0; display: flex; flex-direction: column; gap: 8px; box-shadow: 0 1px 2px rgba(0,0,0,0.04); }\n");
+        html.append(".report-run-meta-item.report-run-meta-duration { border-color: rgba(194,0,0,0.22); background: linear-gradient(145deg, #fff 0%, #fff8f7 55%, #fafbfc 100%); }\n");
+        html.append(".report-run-meta-label { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.1em; color: #888; }\n");
+        html.append(".report-run-meta-value { font-size: 18px; font-weight: 600; color: #1a1a1a; line-height: 1.45; word-break: break-word; }\n");
+        html.append(".report-run-meta-item.report-run-meta-duration .report-run-meta-value { color: #c20000; font-weight: 700; }\n");
         html.append(".screenshots { margin-top: 10px; }\n");
         html.append(".screenshots p { color: #333; font-weight: bold; }\n");
         html.append(".screenshot { margin: 10px 0; }\n");
         html.append(".screenshot img { display: block; }\n");
         html.append(".screenshot p { color: #666; font-size: 0.85em; margin-top: 5px; }\n");
+        html.append(".screenshot-movie { margin: 18px 0 22px; padding: 16px 18px; background: linear-gradient(180deg, #2a2a2a 0%, #1a1a1a 100%); border-radius: 10px; border: 1px solid #404040; scroll-margin-top: 20px; }\n");
+        html.append(".screenshot-movie-title { margin: 0 0 4px 0; color: #fff; font-size: 13px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; }\n");
+        html.append(".screenshot-movie-hint { margin: 0 0 12px 0; color: #888; font-size: 11px; }\n");
+        html.append(".screenshot-movie-stage { width: 100%; max-width: 880px; margin: 0 auto; background: #000; border-radius: 8px; overflow: hidden; aspect-ratio: 16 / 10; display: flex; align-items: center; justify-content: center; min-height: 160px; }\n");
+        html.append(".screenshot-movie-img { max-width: 100%; max-height: 100%; width: auto; height: auto; object-fit: contain; cursor: pointer; }\n");
+        html.append(".screenshot-movie-bar { display: flex; justify-content: space-between; align-items: center; margin-top: 12px; padding: 0 4px; color: #aaa; font-size: 12px; }\n");
+        html.append(".screenshot-movie-counter { font-variant-numeric: tabular-nums; font-weight: 600; color: #ccc; }\n");
+        html.append(".screenshot-movie-jump { margin: 6px 0 14px 0; font-size: 13px; }\n");
+        html.append(".screenshot-movie-jump a { color: #c20000; font-weight: 600; text-decoration: none; border-bottom: 1px solid rgba(194,0,0,0.35); }\n");
+        html.append(".screenshot-movie-jump a:hover { border-bottom-color: #c20000; }\n");
+        html.append(".screenshot-movie-controls { display: flex; justify-content: center; align-items: center; gap: 10px; margin: 4px 0 10px; flex-wrap: wrap; }\n");
+        html.append(".screenshot-movie-btn { min-width: 42px; height: 42px; padding: 0 10px; border-radius: 8px; border: 1px solid #555; background: #333; color: #fff; font-size: 17px; cursor: pointer; line-height: 1; display: inline-flex; align-items: center; justify-content: center; }\n");
+        html.append(".screenshot-movie-btn:hover:not(:disabled) { background: #444; border-color: #c20000; }\n");
+        html.append(".screenshot-movie-btn:disabled { opacity: 0.35; cursor: not-allowed; }\n");
         html.append(".step-logs { margin-top: 15px; }\n");
         html.append(".step-logs p { color: #333; font-weight: bold; margin-bottom: 10px; }\n");
         html.append(".log-container { background-color: #f5f5f5; border: 1px solid #ddd; border-radius: 4px; padding: 10px; max-height: 400px; overflow-y: auto; font-family: 'Courier New', monospace; font-size: 12px; }\n");
@@ -1187,23 +1991,44 @@ public class MervCucumberHandler implements ConcurrentEventListener {
         html.append(".log-debug { color: #616161; }\n");
         html.append(".test-case-content { display: none; }\n");
         html.append(".test-case-content.active { display: block; }\n");
-        html.append(".stats-section { margin: 20px 0; padding: 20px; background-color: #f9f9f9; border-radius: 8px; display: flex; gap: 30px; align-items: flex-start; }\n");
-        html.append(".stats-left { flex: 1; }\n");
-        html.append(".stats-right { flex: 1; }\n");
-        html.append(".stats-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 15px; }\n");
-        html.append(".stat-card { background-color: white; padding: 20px; border-radius: 5px; text-align: center; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }\n");
-        html.append(".stat-card h3 { margin: 0 0 10px 0; color: #666; font-size: 14px; font-weight: normal; }\n");
-        html.append(".stat-card .stat-value { font-size: 36px; font-weight: bold; color: #333; }\n");
-        html.append(".stat-card.total .stat-value { color: #2196F3; }\n");
+        html.append(".chart-collapsible { margin: 0 0 20px 0; border: 1px solid #e0e0e0; border-radius: 10px; background: #fafafa; overflow: hidden; }\n");
+        html.append(".chart-collapsible-head { display: flex; align-items: center; gap: 10px; padding: 12px 16px; cursor: pointer; user-select: none; background: linear-gradient(180deg, #fff, #f5f5f5); border-bottom: 1px solid #e8e8e8; font-weight: 700; font-size: 14px; color: #333; }\n");
+        html.append(".chart-collapsible-head:hover { background: #f0f0f0; }\n");
+        html.append(".chart-collapsible-head .chart-caret { display: inline-block; font-size: 10px; color: #c20000; transition: transform 0.2s ease; transform: rotate(0deg); }\n");
+        html.append(".chart-collapsible-head.collapsed .chart-caret { transform: rotate(-90deg); }\n");
+        html.append(".chart-collapsible-body { padding: 18px; }\n");
+        html.append(".chart-collapsible-body.collapsed { display: none; }\n");
+        html.append(".stats-section { display: flex; flex-wrap: wrap; gap: 20px; align-items: flex-start; }\n");
+        html.append(".stats-left-col { flex: 0 0 40%; max-width: 40%; min-width: 260px; }\n");
+        html.append(".stats-right-col { flex: 1 1 55%; min-width: 280px; }\n");
+        html.append("@media (max-width: 900px) { .stats-left-col, .stats-right-col { flex: 1 1 100%; max-width: 100%; } }\n");
+        html.append(".stat-row-4 { display: flex; flex-direction: row; gap: 8px; margin-bottom: 16px; }\n");
+        html.append(".stat-row-4 .stat-card { flex: 1; min-width: 0; padding: 12px 6px; }\n");
+        html.append(".stat-row-4 .stat-card h3 { font-size: 10px; line-height: 1.2; hyphens: auto; word-wrap: break-word; }\n");
+        html.append(".stat-card { background-color: white; border-radius: 8px; text-align: center; box-shadow: 0 2px 4px rgba(0,0,0,0.08); border: 1px solid #eee; }\n");
+        html.append("a.stat-card { text-decoration: none; color: inherit; display: block; cursor: pointer; }\n");
+        html.append("a.stat-card:hover { box-shadow: 0 4px 10px rgba(0,0,0,0.12); border-color: #ddd; }\n");
+        html.append(".stat-card h3 { margin: 0 0 6px 0; color: #666; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.03em; line-height: 1.2; }\n");
+        html.append(".stat-card .stat-value { font-size: 22px; font-weight: bold; color: #333; line-height: 1.1; }\n");
+        html.append(".stat-card.total .stat-value { color: #c20000; }\n");
         html.append(".stat-card.passed .stat-value { color: #4CAF50; }\n");
         html.append(".stat-card.failed .stat-value { color: #f44336; }\n");
         html.append(".stat-card.skipped .stat-value { color: #FF9800; }\n");
-        html.append(".pie-chart-container { text-align: center; background-color: white; padding: 20px; border-radius: 5px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }\n");
+        html.append(".pie-chart-container { text-align: center; background-color: white; padding: 14px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.06); border: 1px solid #eee; }\n");
         html.append(".pie-chart { display: inline-block; }\n");
-        html.append(".pie-legend { display: flex; justify-content: center; gap: 30px; margin-top: 20px; flex-wrap: wrap; }\n");
-        html.append(".pie-legend-item { display: flex; align-items: center; gap: 8px; }\n");
-        html.append(".pie-legend-color { width: 20px; height: 20px; border-radius: 3px; }\n");
-        html.append(".pie-legend-label { font-size: 14px; color: #333; }\n");
+        html.append(".pie-legend { display: flex; justify-content: center; gap: 16px; margin-top: 12px; flex-wrap: wrap; }\n");
+        html.append(".pie-legend-item { display: flex; align-items: center; gap: 6px; }\n");
+        html.append(".pie-legend-color { width: 14px; height: 14px; border-radius: 3px; flex-shrink: 0; }\n");
+        html.append(".pie-legend-label { font-size: 12px; color: #333; }\n");
+        html.append(".failure-reasons-panel { background: #fff; border: 1px solid #eee; border-radius: 8px; padding: 14px 16px; box-shadow: 0 2px 4px rgba(0,0,0,0.06); max-height: 420px; overflow: auto; }\n");
+        html.append(".failure-reasons-panel h3 { margin: 0 0 12px 0; font-size: 13px; text-transform: uppercase; letter-spacing: 0.06em; color: #c20000; }\n");
+        html.append(".failure-reason-empty { color: #888; font-size: 13px; margin: 0; }\n");
+        html.append("a.failure-reason-row { text-decoration: none; color: inherit; display: flex; }\n");
+        html.append(".failure-reason-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 10px 8px; border-bottom: 1px solid #f0f0f0; cursor: pointer; border-radius: 6px; margin: 0 -4px; }\n");
+        html.append(".failure-reason-row:last-child { border-bottom: none; }\n");
+        html.append(".failure-reason-row:hover { background: #fff5f5; }\n");
+        html.append(".failure-reason-text { flex: 1; min-width: 0; font-size: 13px; color: #333; line-height: 1.35; word-break: break-word; }\n");
+        html.append(".failure-reason-count { flex-shrink: 0; font-weight: 700; font-size: 13px; color: #f44336; min-width: 2em; text-align: right; }\n");
         html.append(".test-case-summary { cursor: pointer; padding: 15px; margin: 10px 0; background-color: #f9f9f9; border-radius: 5px; border-left: 4px solid #ddd; transition: all 0.3s; }\n");
         html.append(".test-case-summary:hover { background-color: #f0f0f0; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }\n");
         html.append(".test-case-summary.passed { border-left-color: #4CAF50; }\n");
@@ -1211,6 +2036,78 @@ public class MervCucumberHandler implements ConcurrentEventListener {
         html.append(".test-case-summary.skipped { border-left-color: #FF9800; }\n");
         html.append("</style>\n");
         html.append("<script>\n");
+        html.append("function collectMovieUrls(box) {\n");
+        html.append("    var spans = box.querySelectorAll('.screenshot-movie-sources [data-src]');\n");
+        html.append("    return Array.prototype.map.call(spans, function(s) { return s.getAttribute('data-src'); });\n");
+        html.append("}\n");
+        html.append("function syncMovieFrame(box, idx) {\n");
+        html.append("    var urls = collectMovieUrls(box);\n");
+        html.append("    if (!urls.length) return;\n");
+        html.append("    var n = urls.length;\n");
+        html.append("    idx = ((idx % n) + n) % n;\n");
+        html.append("    box._movieIdx = idx;\n");
+        html.append("    var img = box.querySelector('.screenshot-movie-img');\n");
+        html.append("    var counter = box.querySelector('.screenshot-movie-counter');\n");
+        html.append("    if (img) img.src = urls[idx];\n");
+        html.append("    if (counter) counter.textContent = (idx + 1) + ' / ' + n;\n");
+        html.append("}\n");
+        html.append("function updatePlayPauseButtons(box) {\n");
+        html.append("    var urls = collectMovieUrls(box);\n");
+        html.append("    var n = urls.length;\n");
+        html.append("    var playBtn = box.querySelector('.screenshot-movie-btn[data-act=\"play\"]');\n");
+        html.append("    var pauseBtn = box.querySelector('.screenshot-movie-btn[data-act=\"pause\"]');\n");
+        html.append("    var prevBtn = box.querySelector('.screenshot-movie-btn[data-act=\"prev\"]');\n");
+        html.append("    var nextBtn = box.querySelector('.screenshot-movie-btn[data-act=\"next\"]');\n");
+        html.append("    if (prevBtn) prevBtn.disabled = n <= 1;\n");
+        html.append("    if (nextBtn) nextBtn.disabled = n <= 1;\n");
+        html.append("    if (playBtn) playBtn.disabled = n < 2 || !!box._moviePlaying;\n");
+        html.append("    if (pauseBtn) pauseBtn.disabled = n < 2 || !box._moviePlaying;\n");
+        html.append("}\n");
+        html.append("function moviePause(box) {\n");
+        html.append("    if (box._movieTimer) { clearInterval(box._movieTimer); box._movieTimer = null; }\n");
+        html.append("    box._moviePlaying = false;\n");
+        html.append("    updatePlayPauseButtons(box);\n");
+        html.append("}\n");
+        html.append("function moviePlay(box) {\n");
+        html.append("    var urls = collectMovieUrls(box);\n");
+        html.append("    if (urls.length < 2 || box._moviePlaying) return;\n");
+        html.append("    var ms = parseInt(box.getAttribute('data-interval-ms') || '1000', 10);\n");
+        html.append("    if (isNaN(ms) || ms < 200) ms = 1000;\n");
+        html.append("    box._moviePlaying = true;\n");
+        html.append("    updatePlayPauseButtons(box);\n");
+        html.append("    box._movieTimer = setInterval(function() {\n");
+        html.append("        syncMovieFrame(box, (box._movieIdx || 0) + 1);\n");
+        html.append("    }, ms);\n");
+        html.append("}\n");
+        html.append("function moviePrev(box) { syncMovieFrame(box, (box._movieIdx || 0) - 1); }\n");
+        html.append("function movieNext(box) { syncMovieFrame(box, (box._movieIdx || 0) + 1); }\n");
+        html.append("function stopAllScreenshotMovies() {\n");
+        html.append("    document.querySelectorAll('.screenshot-movie').forEach(function(box) {\n");
+        html.append("        moviePause(box);\n");
+        html.append("    });\n");
+        html.append("}\n");
+        html.append("function startScreenshotMovieForActive() {\n");
+        html.append("    stopAllScreenshotMovies();\n");
+        html.append("    var activeMovie = document.querySelector('.test-case-content.active .screenshot-movie');\n");
+        html.append("    if (!activeMovie) return;\n");
+        html.append("    var urls = collectMovieUrls(activeMovie);\n");
+        html.append("    if (!urls.length) return;\n");
+        html.append("    activeMovie._movieIdx = 0;\n");
+        html.append("    syncMovieFrame(activeMovie, 0);\n");
+        html.append("    updatePlayPauseButtons(activeMovie);\n");
+        html.append("    if (urls.length >= 2) moviePlay(activeMovie);\n");
+        html.append("}\n");
+        html.append("document.addEventListener('click', function(e) {\n");
+        html.append("    var btn = e.target.closest('.screenshot-movie-btn');\n");
+        html.append("    if (!btn) return;\n");
+        html.append("    var box = btn.closest('.screenshot-movie');\n");
+        html.append("    if (!box) return;\n");
+        html.append("    var act = btn.getAttribute('data-act');\n");
+        html.append("    if (act === 'prev') moviePrev(box);\n");
+        html.append("    else if (act === 'next') movieNext(box);\n");
+        html.append("    else if (act === 'play') moviePlay(box);\n");
+        html.append("    else if (act === 'pause') moviePause(box);\n");
+        html.append("});\n");
         html.append("function showTestCase(testCaseId) {\n");
         html.append("    // Hide all test case contents\n");
         html.append("    var allContents = document.querySelectorAll('.test-case-content');\n");
@@ -1232,13 +2129,51 @@ public class MervCucumberHandler implements ConcurrentEventListener {
         html.append("    // Add active class to clicked sidebar item\n");
         html.append("    var clickedItem = document.getElementById('sidebar-' + testCaseId);\n");
         html.append("    if (clickedItem) { clickedItem.classList.add('active'); }\n");
+        html.append("    startScreenshotMovieForActive();\n");
         html.append("}\n");
         html.append("var currentFilter = 'all';\n");
+        html.append("var currentFailureReasonId = '';\n");
+        html.append("function toggleChartBlock() {\n");
+        html.append("    var body = document.getElementById('chart-block-body');\n");
+        html.append("    var head = document.getElementById('chart-block-head');\n");
+        html.append("    if (!body || !head) return;\n");
+        html.append("    var collapsed = body.classList.toggle('collapsed');\n");
+        html.append("    head.classList.toggle('collapsed', collapsed);\n");
+        html.append("    head.setAttribute('aria-expanded', collapsed ? 'false' : 'true');\n");
+        html.append("    if (!collapsed && typeof drawPieChart === 'function') {\n");
+        html.append("        var c = document.getElementById('pieChart');\n");
+        html.append("        if (c && c.dataset) {\n");
+        html.append("            var p = parseInt(c.dataset.passed||'0',10), f = parseInt(c.dataset.failed||'0',10), k = parseInt(c.dataset.skipped||'0',10);\n");
+        html.append("            drawPieChart(p,f,k);\n");
+        html.append("        }\n");
+        html.append("    }\n");
+        html.append("}\n");
+        html.append("function filterShowAllTestCases() {\n");
+        html.append("    currentFailureReasonId = '';\n");
+        html.append("    currentFilter = 'all';\n");
+        html.append("    var filterButtons = document.querySelectorAll('.filter-btn');\n");
+        html.append("    filterButtons.forEach(function(btn) { btn.classList.remove('active'); });\n");
+        html.append("    var ab = document.querySelector('.filter-btn[data-status=\"all\"]');\n");
+        html.append("    if (ab) { ab.classList.add('active'); }\n");
+        html.append("    applyFilters(document.getElementById('testcase-search').value.toLowerCase(), 'all');\n");
+        html.append("    return false;\n");
+        html.append("}\n");
+        html.append("function filterByFailureReasonId(id) {\n");
+        html.append("    currentFailureReasonId = String(id);\n");
+        html.append("    currentFilter = 'failed';\n");
+        html.append("    var filterButtons = document.querySelectorAll('.filter-btn');\n");
+        html.append("    filterButtons.forEach(function(btn) { btn.classList.remove('active'); });\n");
+        html.append("    var fb = document.querySelector('.filter-btn[data-status=\"failed\"]');\n");
+        html.append("    if (fb) { fb.classList.add('active'); }\n");
+        html.append("    applyFilters(document.getElementById('testcase-search').value.toLowerCase(), 'failed');\n");
+        html.append("    return false;\n");
+        html.append("}\n");
         html.append("function searchTestCases() {\n");
         html.append("    var searchTerm = document.getElementById('testcase-search').value.toLowerCase();\n");
         html.append("    applyFilters(searchTerm, currentFilter);\n");
         html.append("}\n");
         html.append("function filterByStatus(status) {\n");
+        html.append("    currentFailureReasonId = '';\n");
         html.append("    currentFilter = status;\n");
         html.append("    // Update active filter button\n");
         html.append("    var filterButtons = document.querySelectorAll('.filter-btn');\n");
@@ -1258,7 +2193,11 @@ public class MervCucumberHandler implements ConcurrentEventListener {
         html.append("                           (item.classList.contains('skipped') ? 'skipped' : 'all'));\n");
         html.append("        var matchesSearch = testCaseName.includes(searchTerm);\n");
         html.append("        var matchesFilter = (statusFilter === 'all' || testCaseStatus === statusFilter);\n");
-        html.append("        if (matchesSearch && matchesFilter) {\n");
+        html.append("        var matchesReason = true;\n");
+        html.append("        if (currentFailureReasonId !== '' && currentFailureReasonId != null) {\n");
+        html.append("            matchesReason = (item.getAttribute('data-failure-id') || '') === String(currentFailureReasonId);\n");
+        html.append("        }\n");
+        html.append("        if (matchesSearch && matchesFilter && matchesReason) {\n");
         html.append("            item.style.display = 'block';\n");
         html.append("        } else {\n");
         html.append("            item.style.display = 'none';\n");
@@ -1322,7 +2261,7 @@ public class MervCucumberHandler implements ConcurrentEventListener {
         html.append("</head>\n<body>\n");
         html.append("<div class=\"main-wrapper\">\n");
         html.append("<div class=\"sidebar\">\n");
-        html.append("<div class=\"sidebar-brand\">Merv</div>\n");
+        html.append("<div class=\"sidebar-brand\"><img class=\"brand-logo\" src=\"").append(MERV_REPORT_LOGO_URL).append("\" alt=\"Merv\"><p class=\"sidebar-local-label\">Merv Local</p></div>\n");
         html.append("<div class=\"sidebar-search\">\n");
         html.append("<input type=\"text\" id=\"testcase-search\" placeholder=\"Search test cases...\" onkeyup=\"searchTestCases()\">\n");
         html.append("</div>\n");
@@ -1333,94 +2272,160 @@ public class MervCucumberHandler implements ConcurrentEventListener {
         html.append("<button class=\"filter-btn\" data-status=\"skipped\" onclick=\"filterByStatus('skipped')\">Skip</button>\n");
         html.append("</div>\n");
         html.append("<h2>Test Cases</h2>\n");
-        
+
+        List<LocalTestCase> reportCases = localTestSuite.getTestCases();
+        LinkedHashMap<String, Integer> failureReasonCounts = new LinkedHashMap<>();
+        for (LocalTestCase tc : reportCases) {
+            if (!"FAILED".equals(tc.getStatus())) {
+                continue;
+            }
+            String frKey = normalizeFailureReasonForReport(tc);
+            failureReasonCounts.merge(frKey, 1, Integer::sum);
+        }
+        Map<String, Integer> failureReasonToId = new LinkedHashMap<>();
+        int frId = 0;
+        for (String frKey : failureReasonCounts.keySet()) {
+            failureReasonToId.put(frKey, frId++);
+        }
+
         // Build sidebar with test cases
         int testCaseIndex = 0;
-        for (LocalTestCase testCase : localTestSuite.getTestCases()) {
+        for (LocalTestCase testCase : reportCases) {
             String testCaseId = "tc-" + testCaseIndex;
             html.append("<div class=\"sidebar-item ").append(testCase.getStatus().toLowerCase());
             if (testCaseIndex == 0) {
                 html.append(" active"); // First test case is active by default
             }
-            html.append("\" id=\"sidebar-").append(testCaseId).append("\" onclick=\"showTestCase('").append(testCaseId).append("')\">\n");
-            html.append("<div class=\"sidebar-item-name\">").append(escapeHtml(testCase.getTestcaseName())).append("</div>\n");
-            html.append("<div class=\"sidebar-item-status\">").append(testCase.getStatus()).append("</div>\n");
+            String fid = "";
+            if ("FAILED".equals(testCase.getStatus())) {
+                Integer id = failureReasonToId.get(normalizeFailureReasonForReport(testCase));
+                if (id != null) {
+                    fid = String.valueOf(id);
+                }
+            }
+            html.append("\" data-failure-id=\"").append(escapeHtml(fid)).append("\" id=\"sidebar-").append(testCaseId).append("\" onclick=\"showTestCase('").append(testCaseId).append("')\">\n");
+            String status = testCase.getStatus() == null ? "" : testCase.getStatus().toUpperCase(Locale.ROOT);
+            String tagText = "ACTIVE";
+            String tagClass = "active";
+            if ("PASSED".equals(status)) {
+                tagText = "PASS";
+                tagClass = "pass";
+            } else if ("FAILED".equals(status)) {
+                tagText = "FAIL";
+                tagClass = "fail";
+            } else if ("SKIPPED".equals(status)) {
+                tagText = "SKIP";
+                tagClass = "skip";
+            }
+            html.append("<div class=\"sidebar-item-top\">");
+            html.append("<div class=\"sidebar-item-name\">").append(escapeHtml(testCase.getTestcaseName())).append("</div>");
+            html.append("<span class=\"sidebar-status-tag ").append(tagClass).append("\">").append(tagText).append("</span>");
+            html.append("</div>\n");
             html.append("</div>\n");
             testCaseIndex++;
         }
         html.append("</div>\n"); // Close sidebar
-        
+
         // Content area
         html.append("<div class=\"content-area\">\n");
         html.append("<div class=\"container\">\n");
-        
+        html.append("<div class=\"report-toolbar\"><a class=\"local-dash\" href=\"../../index.html\">Local Dashboard</a></div>\n");
+
         // Suite Name
         html.append("<h1>").append(escapeHtml(localTestSuite.getTitle())).append("</h1>\n");
-        
-        // Calculate statistics
-        int total = localTestSuite.getTestCases().size();
-        long passed = localTestSuite.getTestCases().stream().filter(tc -> "PASSED".equals(tc.getStatus())).count();
-        long failed = localTestSuite.getTestCases().stream().filter(tc -> "FAILED".equals(tc.getStatus())).count();
-        long skipped = localTestSuite.getTestCases().stream().filter(tc -> "SKIPPED".equals(tc.getStatus())).count();
-        
-        // Stats Section
+
+        // Calculate statistics (same list as sidebar)
+        int total = reportCases.size();
+        long passed = reportCases.stream().filter(tc -> "PASSED".equals(tc.getStatus())).count();
+        long failed = reportCases.stream().filter(tc -> "FAILED".equals(tc.getStatus())).count();
+        long skipped = reportCases.stream().filter(tc -> "SKIPPED".equals(tc.getStatus())).count();
+
+        html.append("<div class=\"chart-collapsible\">\n");
+        html.append("<div class=\"chart-collapsible-head\" id=\"chart-block-head\" role=\"button\" tabindex=\"0\" aria-expanded=\"true\" onclick=\"toggleChartBlock()\" onkeydown=\"if(event.key==='Enter'||event.key===' '){event.preventDefault();toggleChartBlock();}\">\n");
+        html.append("<span class=\"chart-caret\" aria-hidden=\"true\">&#9660;</span>\n");
+        html.append("<span>Summary &amp; charts</span>\n");
+        html.append("</div>\n");
+        html.append("<div class=\"chart-collapsible-body\" id=\"chart-block-body\">\n");
         html.append("<div class=\"stats-section\">\n");
-        
-        // Left side - 4 stat boxes in 2x2 grid
-        html.append("<div class=\"stats-left\">\n");
-        html.append("<div class=\"stats-grid\">\n");
-        html.append("<div class=\"stat-card total\"><h3>Total Test Cases</h3><div class=\"stat-value\">").append(total).append("</div></div>\n");
+
+        html.append("<div class=\"stats-left-col\">\n");
+        html.append("<div class=\"stat-row-4\">\n");
+        html.append("<a href=\"#\" class=\"stat-card total\" style='background:white;' onclick=\"return filterShowAllTestCases();\" title=\"Show all test cases in the sidebar\"><h3>Total</h3><div class=\"stat-value\">").append(total).append("</div></a>\n");
         html.append("<div class=\"stat-card passed\"><h3>Passed</h3><div class=\"stat-value\">").append(passed).append("</div></div>\n");
         html.append("<div class=\"stat-card failed\"><h3>Failed</h3><div class=\"stat-value\">").append(failed).append("</div></div>\n");
         html.append("<div class=\"stat-card skipped\"><h3>Skipped</h3><div class=\"stat-value\">").append(skipped).append("</div></div>\n");
         html.append("</div>\n");
-        html.append("</div>\n"); // Close stats-left
-        
-        // Right side - Pie Chart
-        html.append("<div class=\"stats-right\">\n");
         html.append("<div class=\"pie-chart-container\">\n");
-        html.append("<canvas id=\"pieChart\" width=\"300\" height=\"300\"></canvas>\n");
+        html.append("<canvas id=\"pieChart\" width=\"300\" height=\"300\" data-passed=\"").append(passed).append("\" data-failed=\"").append(failed).append("\" data-skipped=\"").append(skipped).append("\"></canvas>\n");
         html.append("<div class=\"pie-legend\">\n");
         html.append("<div class=\"pie-legend-item\"><div class=\"pie-legend-color\" style=\"background-color: #4CAF50;\"></div><span class=\"pie-legend-label\">Passed (").append(passed).append(")</span></div>\n");
         html.append("<div class=\"pie-legend-item\"><div class=\"pie-legend-color\" style=\"background-color: #f44336;\"></div><span class=\"pie-legend-label\">Failed (").append(failed).append(")</span></div>\n");
         html.append("<div class=\"pie-legend-item\"><div class=\"pie-legend-color\" style=\"background-color: #FF9800;\"></div><span class=\"pie-legend-label\">Skipped (").append(skipped).append(")</span></div>\n");
         html.append("</div>\n");
-        html.append("</div>\n"); // Close pie-chart-container
-        html.append("</div>\n"); // Close stats-right
-        
-        html.append("</div>\n"); // Close stats-section
-        
-        // Metadata
-        SimpleDateFormat dateFormat = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss");
-        html.append("<div class=\"metadata\">\n");
-        html.append("<p><strong>Start Time:</strong> ").append(dateFormat.format(localTestSuite.getStartTime())).append("</p>\n");
-        html.append("<p><strong>End Time:</strong> ").append(dateFormat.format(localTestSuite.getEndTime())).append("</p>\n");
-        long duration = localTestSuite.getEndTime().getTime() - localTestSuite.getStartTime().getTime();
-        html.append("<p><strong>Duration:</strong> ").append(formatDuration(duration)).append("</p>\n");
         html.append("</div>\n");
-        
+        html.append("</div>\n");
+
+        html.append("<div class=\"stats-right-col\">\n");
+        html.append("<div class=\"failure-reasons-panel\">\n");
+        html.append("<h3>Failure reasons</h3>\n");
+        if (failureReasonCounts.isEmpty()) {
+            html.append("<p class=\"failure-reason-empty\">No failures in this run.</p>\n");
+        } else {
+            for (Map.Entry<String, Integer> ent : failureReasonCounts.entrySet()) {
+                String reason = ent.getKey();
+                int cnt = ent.getValue();
+                int rid = failureReasonToId.getOrDefault(reason, 0);
+                html.append("<a href=\"#\" class=\"failure-reason-row\" onclick=\"return filterByFailureReasonId(").append(rid).append(");\" title=\"").append(escapeHtml(reason)).append("\">\n");
+                html.append("<span class=\"failure-reason-text\">").append(escapeHtml(reason)).append("</span>\n");
+                html.append("<span class=\"failure-reason-count\">").append(cnt).append("</span>\n");
+                html.append("</a>\n");
+            }
+        }
+        html.append("</div>\n");
+        html.append("</div>\n");
+
+        html.append("</div>\n");
+        html.append("</div>\n");
+        html.append("</div>\n");
+
+        // Run timing (start / end / duration)
+        long duration = localTestSuite.getEndTime().getTime() - localTestSuite.getStartTime().getTime();
+        html.append("<div class=\"report-run-meta\" role=\"group\" aria-label=\"Run timing\">\n");
+        html.append("<div class=\"report-run-meta-item\"><span class=\"report-run-meta-label\">Start</span><span class=\"report-run-meta-value\">")
+                .append(escapeHtml(formatReportDateTimeEnglish(localTestSuite.getStartTime()))).append("</span></div>\n");
+        html.append("<div class=\"report-run-meta-item\"><span class=\"report-run-meta-label\">End</span><span class=\"report-run-meta-value\">")
+                .append(escapeHtml(formatReportDateTimeEnglish(localTestSuite.getEndTime()))).append("</span></div>\n");
+        html.append("<div class=\"report-run-meta-item report-run-meta-duration\"><span class=\"report-run-meta-label\">Duration</span><span class=\"report-run-meta-value\">")
+                .append(escapeHtml(formatDuration(duration))).append("</span></div>\n");
+        html.append("</div>\n");
+
         // Test Cases Content
         testCaseIndex = 0;
-        for (LocalTestCase testCase : localTestSuite.getTestCases()) {
+        for (LocalTestCase testCase : reportCases) {
             String testCaseId = "tc-" + testCaseIndex;
             html.append("<div class=\"test-case-content");
             if (testCaseIndex == 0) {
                 html.append(" active"); // First test case is visible by default
             }
             html.append("\" id=\"testcase-").append(testCaseId).append("\">\n");
-            
+
             html.append("<div class=\"test-case ").append(testCase.getStatus().toLowerCase()).append("\">\n");
             html.append("<h3>").append(escapeHtml(testCase.getTestcaseName())).append("</h3>\n");
             html.append("<p><strong>Status:</strong> ").append(testCase.getStatus()).append("</p>\n");
-            
+
             if (testCase.getFailureReason() != null && !testCase.getFailureReason().isEmpty()) {
                 html.append("<div class=\"error\"><strong>Error:</strong> ").append(escapeHtml(testCase.getFailureReason())).append("</div>\n");
             }
-            
+
             if (testCase.getTags() != null && !testCase.getTags().isEmpty()) {
                 html.append("<p><strong>Tags:</strong> ").append(escapeHtml(String.join(", ", testCase.getTags()))).append("</p>\n");
             }
-            
+
+            List<String> moviePaths = collectTestCaseScreenshotPaths(testCase);
+            if (!moviePaths.isEmpty()) {
+                html.append("<p class=\"screenshot-movie-jump\"><a href=\"#screenshot-movie-").append(testCaseId).append("\">Screenshot movie &#8595;</a></p>\n");
+            }
+
             // Test Steps
             if (testCase.getTestSteps() != null && !testCase.getTestSteps().isEmpty()) {
                 html.append("<h4>Test Steps:</h4>\n");
@@ -1430,7 +2435,7 @@ public class MervCucumberHandler implements ConcurrentEventListener {
                     if (step.getErrorMessage() != null && !step.getErrorMessage().isEmpty()) {
                         html.append("<div class=\"error\">").append(escapeHtml(step.getErrorMessage())).append("</div>\n");
                     }
-                    
+
                     // Display logs if any (usually for failed steps)
                     if (step.getLogs() != null && !step.getLogs().isEmpty()) {
                         html.append("<div class=\"step-logs\">\n");
@@ -1451,7 +2456,7 @@ public class MervCucumberHandler implements ConcurrentEventListener {
                         html.append("</div>\n");
                         html.append("</div>\n");
                     }
-                    
+
                     // Display screenshots if any
                     if (step.getScreenshots() != null && !step.getScreenshots().isEmpty()) {
                         html.append("<div class=\"screenshots\">\n");
@@ -1466,27 +2471,52 @@ public class MervCucumberHandler implements ConcurrentEventListener {
                         }
                         html.append("</div>\n");
                     }
-                    
+
                     html.append("</div>\n");
                 }
             }
-            
+
+            if (!moviePaths.isEmpty()) {
+                String firstUrl = (".." + File.separator + moviePaths.get(0)).replace("\\", "/");
+                html.append("<div class=\"screenshot-movie\" id=\"screenshot-movie-").append(testCaseId).append("\" data-interval-ms=\"1000\">\n");
+                html.append("<h4 class=\"screenshot-movie-title\">Screenshot movie</h4>\n");
+                html.append("<p class=\"screenshot-movie-hint\">All step screenshots in order. Auto-play advances every 1 second; use controls below.</p>\n");
+                html.append("<div class=\"screenshot-movie-sources\" hidden aria-hidden=\"true\">\n");
+                for (String shot : moviePaths) {
+                    String url = (".." + File.separator + shot).replace("\\", "/");
+                    html.append("<span data-src=\"").append(escapeHtml(url)).append("\"></span>\n");
+                }
+                html.append("</div>\n");
+                html.append("<div class=\"screenshot-movie-stage\">\n");
+                html.append("<img class=\"screenshot-movie-img\" src=\"").append(escapeHtml(firstUrl)).append("\" alt=\"Screenshot frame\" onclick=\"window.open(this.src, '_blank')\">\n");
+                html.append("</div>\n");
+                html.append("<div class=\"screenshot-movie-controls\">\n");
+                html.append("<button type=\"button\" class=\"screenshot-movie-btn\" data-act=\"prev\" title=\"Previous frame\" aria-label=\"Previous frame\">&#9664;</button>\n");
+                html.append("<button type=\"button\" class=\"screenshot-movie-btn\" data-act=\"play\" title=\"Play\" aria-label=\"Play\">&#9654;</button>\n");
+                html.append("<button type=\"button\" class=\"screenshot-movie-btn\" data-act=\"pause\" title=\"Pause\" aria-label=\"Pause\">&#9208;</button>\n");
+                html.append("<button type=\"button\" class=\"screenshot-movie-btn\" data-act=\"next\" title=\"Next frame\" aria-label=\"Next frame\">&#9658;</button>\n");
+                html.append("</div>\n");
+                html.append("<div class=\"screenshot-movie-bar\"><span class=\"screenshot-movie-counter\">1 / ").append(moviePaths.size()).append("</span>");
+                html.append("<span>Click image to open full size</span></div>\n");
+                html.append("</div>\n");
+            }
+
             html.append("</div>\n"); // Close test-case
             html.append("</div>\n"); // Close test-case-content
             testCaseIndex++;
         }
-        
+
         html.append("</div>\n"); // Close container
         html.append("</div>\n"); // Close content-area
         html.append("</div>\n"); // Close main-wrapper
         html.append("<script>\n");
-        html.append("// Draw pie chart on page load\n");
-        html.append("window.onload = function() {\n");
+        html.append("window.addEventListener('load', function() {\n");
         html.append("    drawPieChart(").append(passed).append(", ").append(failed).append(", ").append(skipped).append(");\n");
-        html.append("};\n");
+        html.append("    startScreenshotMovieForActive();\n");
+        html.append("});\n");
         html.append("</script>\n");
         html.append("</body>\n</html>");
-        
+
         FileUtils.writeFile(filePath, html.toString());
     }
 
@@ -1499,7 +2529,9 @@ public class MervCucumberHandler implements ConcurrentEventListener {
         jsonReport.put("testSuite", localTestSuite);
         jsonReport.put("exportDate", new Date().toString());
         jsonReport.put("version", "1.0");
-        
+        jsonReport.put("running", false);
+        jsonReport.put("lastActivityMillis", System.currentTimeMillis());
+
         String json = objectMapper.writeValueAsString(jsonReport);
         FileUtils.writeFile(filePath, json);
     }
@@ -1507,30 +2539,88 @@ public class MervCucumberHandler implements ConcurrentEventListener {
     /**
      * Escape HTML special characters
      */
-    private String escapeHtml(String text) {
+    private static String escapeHtml(String text) {
         if (text == null) return "";
         return text.replace("&", "&amp;")
-                   .replace("<", "&lt;")
-                   .replace(">", "&gt;")
-                   .replace("\"", "&quot;")
-                   .replace("'", "&#39;");
+                .replace("<", "&lt;")
+                .replace(">", "&gt;")
+                .replace("\"", "&quot;")
+                .replace("'", "&#39;");
+    }
+
+    /** e.g. 11th April 2026 04:47:39 PM */
+    private static String dayOrdinalEnglish(int day) {
+        if (day >= 11 && day <= 13) {
+            return day + "th";
+        }
+        switch (day % 10) {
+            case 1:
+                return day + "st";
+            case 2:
+                return day + "nd";
+            case 3:
+                return day + "rd";
+            default:
+                return day + "th";
+        }
+    }
+
+    private String formatReportDateTimeEnglish(Date date) {
+        if (date == null) {
+            return "";
+        }
+        Calendar cal = Calendar.getInstance();
+        cal.setTime(date);
+        int day = cal.get(Calendar.DAY_OF_MONTH);
+        String month = new SimpleDateFormat("MMMM", Locale.ENGLISH).format(date);
+        int year = cal.get(Calendar.YEAR);
+        String clock = new SimpleDateFormat("hh:mm:ss a", Locale.ENGLISH).format(date);
+        return dayOrdinalEnglish(day) + " " + month + " " + year + " " + clock;
     }
 
     /**
-     * Format duration in milliseconds to readable string
+     * Clock-style duration: {@code 00:11 Sec} under one hour; {@code 01:05:30} when an hour or more.
      */
     private String formatDuration(long milliseconds) {
-        long seconds = milliseconds / 1000;
-        long minutes = seconds / 60;
-        long hours = minutes / 60;
-        
-        if (hours > 0) {
-            return String.format("%d hours, %d minutes, %d seconds", hours, minutes % 60, seconds % 60);
-        } else if (minutes > 0) {
-            return String.format("%d minutes, %d seconds", minutes, seconds % 60);
-        } else {
-            return String.format("%d seconds", seconds);
+        long totalSec = Math.max(0L, milliseconds / 1000L);
+        long h = totalSec / 3600L;
+        long m = (totalSec % 3600L) / 60L;
+        long s = totalSec % 60L;
+        if (h > 0) {
+            return String.format(Locale.ENGLISH, "%02d:%02d:%02d", h, m, s);
         }
+        return String.format(Locale.ENGLISH, "%02d:%02d Sec", m, s);
+    }
+
+    /** All screenshot paths for a test case, in step order (for HTML movie strip). */
+    private static List<String> collectTestCaseScreenshotPaths(LocalTestCase testCase) {
+        List<String> paths = new ArrayList<>();
+        if (testCase == null || testCase.getTestSteps() == null) {
+            return paths;
+        }
+        for (LocalTestStep step : testCase.getTestSteps()) {
+            if (step.getScreenshots() == null) {
+                continue;
+            }
+            for (String s : step.getScreenshots()) {
+                if (s != null && !s.trim().isEmpty()) {
+                    paths.add(s);
+                }
+            }
+        }
+        return paths;
+    }
+
+    /** Normalized failure message for grouping in HTML report (failed cases only). */
+    private static String normalizeFailureReasonForReport(LocalTestCase tc) {
+        if (tc == null || !"FAILED".equals(tc.getStatus())) {
+            return "";
+        }
+        String r = tc.getFailureReason();
+        if (r == null || r.trim().isEmpty()) {
+            return "(No failure message)";
+        }
+        return r.trim();
     }
 
     /**
@@ -1649,30 +2739,30 @@ public class MervCucumberHandler implements ConcurrentEventListener {
         if (startTime == null || endTime == null) {
             return relevantLogs;
         }
-        
+
         try {
             String logFilePath = System.getProperty("user.dir") + File.separator + "log4j.log";
             File logFile = new File(logFilePath);
-            
+
             if (!logFile.exists()) {
                 System.out.println("Log file not found: " + logFilePath);
                 return relevantLogs;
             }
-            
+
             // Parse log file
             SimpleDateFormat logDateFormat = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss,SSS");
             List<String> allLines = java.nio.file.Files.readAllLines(logFile.toPath(), java.nio.charset.StandardCharsets.UTF_8);
-            
+
             // Add a small buffer before start time and after end time to capture context
             long bufferMs = 1000; // 1 second buffer
             Date searchStartTime = new Date(startTime.getTime() - bufferMs);
             Date searchEndTime = new Date(endTime.getTime() + bufferMs);
-            
+
             for (String line : allLines) {
                 if (line == null || line.trim().isEmpty()) {
                     continue;
                 }
-                
+
                 // Parse timestamp from log line
                 // Format: yyyy-MM-dd HH:mm:ss,SSS LEVEL - message
                 try {
@@ -1680,10 +2770,10 @@ public class MervCucumberHandler implements ConcurrentEventListener {
                     if (line.length() < 23) {
                         continue;
                     }
-                    
+
                     String timestampStr = line.substring(0, 23);
                     Date logTime = logDateFormat.parse(timestampStr);
-                    
+
                     // Check if log time is within the step execution time range
                     if (logTime.compareTo(searchStartTime) >= 0 && logTime.compareTo(searchEndTime) <= 0) {
                         relevantLogs.add(line);
@@ -1693,12 +2783,12 @@ public class MervCucumberHandler implements ConcurrentEventListener {
                     continue;
                 }
             }
-            
+
         } catch (Exception e) {
             System.err.println("Error reading log file: " + e.getMessage());
             e.printStackTrace();
         }
-        
+
         return relevantLogs;
     }
 }

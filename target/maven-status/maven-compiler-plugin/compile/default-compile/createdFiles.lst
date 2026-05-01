@@ -10,6 +10,7 @@ org/teche/merv/client/auth/AuthManager$LoginResponse.class
 org/teche/merv/client/dto/TestStepPatchRequest.class
 org/teche/merv/client/logging/LoggingExample.class
 org/teche/merv/client/plugin/MervCucumberHandler$LocalTestStep.class
+org/teche/merv/client/utils/ReportsDeleteServer.class
 org/teche/merv/client/dto/FileAttachmentResponse.class
 org/teche/merv/client/dto/TestStepRequest.class
 org/teche/merv/client/auth/AuthManager$RefreshTokenRequest.class
@@ -35,6 +36,9 @@ org/teche/merv/client/dto/TestSuitePatchRequest.class
 org/teche/merv/client/utils/TestStepBuilder.class
 org/teche/merv/client/utils/TestSuiteBuilder.class
 org/teche/merv/client/logging/MervLogger.class
+org/teche/merv/client/plugin/MervCucumberHandler$ReportIndexEntry.class
 org/teche/merv/client/plugin/MervCucumberHandler$LocalTestCase.class
 org/teche/merv/client/logging/package-info.class
 org/teche/merv/client/logging/MervLoggerImpl$1.class
+org/teche/merv/client/plugin/MervCucumberHandler$ReportSummary.class
+org/teche/merv/client/utils/ReportsDeleteServer$DeleteHandler.class

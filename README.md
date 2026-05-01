@@ -46,13 +46,13 @@ MERV Client is a Java client library for the MERV (Metrics Engine for Reports & 
 - Maven 3.6+
 
 ### Maven Dependency
-Add to your `pom.xml`:
+Add to your `pom.xml` (from [Maven Central](https://central.sonatype.com/artifact/io.github.techelliiptica/merv-client-api)):
 
 ```xml
 <dependency>
-    <groupId>org.teche</groupId>
-    <artifactId>merv-client</artifactId>
-    <version>1.0.0</version>
+    <groupId>io.github.techelliiptica</groupId>
+    <artifactId>merv-client-api</artifactId>
+    <version>3.0.0</version>
 </dependency>
 ```
 
@@ -244,7 +244,7 @@ This creates a fat JAR file that includes all dependencies.
 
 ### Run Demo Application
 ```bash
-java -jar target/merv-client-1.0.0-jar-with-dependencies.jar \
+java -jar target/merv-client-api-3.0.0-jar-with-dependencies.jar \
     --baseUrl http://103.145.50.107:7777/api/v1 \
     --username testuser \
     --password testpass
@@ -291,7 +291,7 @@ mvn exec:java -Dexec.mainClass="org.teche.merv.client.MervClientApplication"
 mvn assembly:single
 
 # Distribute the JAR file
-cp target/merv-client-1.0.0-jar-with-dependencies.jar /path/to/distribution/
+cp target/merv-client-api-3.0.0-jar-with-dependencies.jar /path/to/distribution/
 ```
 
 ### Maven Repository

@@ -3,6 +3,7 @@ package org.teche.merv.client.utils;
 import java.io.File;
 import java.io.FileWriter;
 import java.io.IOException;
+import java.util.Comparator;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -96,6 +97,46 @@ public class FileUtils {
         Path path = Paths.get(filePath);
         Path parent = path.getParent();
         return parent != null ? parent.toString() : null;
+    }
+
+    /**
+     * Delete a report run folder recursively.
+     *
+     * @param folderPath absolute or relative folder path
+     * @return true if deleted (or not present), false on failure
+     */
+    public static boolean deleteReportRunFolder(String folderPath) {
+        if (folderPath == null || folderPath.trim().isEmpty()) {
+            return false;
+        }
+
+        Path folder = Paths.get(folderPath);
+        if (!Files.exists(folder)) {
+            // Already deleted / missing is treated as success.
+            return true;
+        }
+
+        try {
+            if (Files.isRegularFile(folder)) {
+                Files.deleteIfExists(folder);
+                return true;
+            }
+
+            // Delete children first, then the directory.
+            Files.walk(folder)
+                    .sorted(Comparator.reverseOrder())
+                    .forEach(path -> {
+                        try {
+                            Files.deleteIfExists(path);
+                        } catch (IOException e) {
+                            throw new RuntimeException(e);
+                        }
+                    });
+            return true;
+        } catch (Exception e) {
+            System.err.println("Error deleting report run folder: " + folderPath + " - " + e.getMessage());
+            return false;
+        }
     }
 }
 
