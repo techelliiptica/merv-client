@@ -5,10 +5,12 @@
 /Users/vaibhavsingh/Desktop/teche-apps/merv/merv-client/src/main/java/org/teche/merv/client/dto/TestSuitePatchRequest.java
 /Users/vaibhavsingh/Desktop/teche-apps/merv/merv-client/src/main/java/org/teche/merv/client/dto/TestCaseResponse.java
 /Users/vaibhavsingh/Desktop/teche-apps/merv/merv-client/src/main/java/org/teche/merv/client/config/MervConfig.java
+/Users/vaibhavsingh/Desktop/teche-apps/merv/merv-client/src/main/java/org/teche/merv/client/plugin/AutomationTool.java
 /Users/vaibhavsingh/Desktop/teche-apps/merv/merv-client/src/main/java/org/teche/merv/client/logging/LoggingExample.java
 /Users/vaibhavsingh/Desktop/teche-apps/merv/merv-client/src/main/java/org/teche/merv/client/logging/MervLoggerImpl.java
 /Users/vaibhavsingh/Desktop/teche-apps/merv/merv-client/src/main/java/org/teche/merv/client/dto/FileType.java
 /Users/vaibhavsingh/Desktop/teche-apps/merv/merv-client/src/main/java/org/teche/merv/client/MervClient.java
+/Users/vaibhavsingh/Desktop/teche-apps/merv/merv-client/src/main/java/org/teche/merv/client/plugin/AutomationScreenshotCapturer.java
 /Users/vaibhavsingh/Desktop/teche-apps/merv/merv-client/src/main/java/org/teche/merv/client/exception/MervClientException.java
 /Users/vaibhavsingh/Desktop/teche-apps/merv/merv-client/src/main/java/org/teche/merv/client/dto/TestCaseStatus.java
 /Users/vaibhavsingh/Desktop/teche-apps/merv/merv-client/src/main/java/org/teche/merv/client/logging/MervLogger.java

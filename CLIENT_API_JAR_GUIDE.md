@@ -8,10 +8,10 @@ The MERV Client API JAR is a standalone executable JAR file that contains all de
 
 After building the project, you'll find these JAR files in the `target/` directory:
 
-1. **`merv-client-api-1.0.0-jar-with-dependencies.jar`** (4.5 MB) - **Main executable JAR with all dependencies**
-2. `merv-client-api-1.0.0.jar` (40 KB) - Standard JAR without dependencies
-3. `merv-client-api-1.0.0-sources.jar` (16 KB) - Source code JAR
-4. `merv-client-api-1.0.0-javadoc.jar` (190 KB) - JavaDoc documentation JAR
+1. **`merv-client-api-3.0.0-jar-with-dependencies.jar`** (4.5 MB) - **Main executable JAR with all dependencies**
+2. `merv-client-api-3.0.0.jar` (40 KB) - Standard JAR without dependencies
+3. `merv-client-api-3.0.0-sources.jar` (16 KB) - Source code JAR
+4. `merv-client-api-3.0.0-javadoc.jar` (190 KB) - JavaDoc documentation JAR
 
 ## 🚀 Quick Start
 
@@ -23,13 +23,13 @@ After building the project, you'll find these JAR files in the `target/` directo
 
 ```bash
 # Basic usage
-java -jar merv-client-api-1.0.0-jar-with-dependencies.jar <baseUrl> <username> <password>
+java -jar merv-client-api-3.0.0-jar-with-dependencies.jar <baseUrl> <username> <password>
 
 # Example with local server
-java -jar merv-client-api-1.0.0-jar-with-dependencies.jar http://localhost:7777/api/v1 admin password
+java -jar merv-client-api-3.0.0-jar-with-dependencies.jar http://localhost:7777/api/v1 admin password
 
 # Example with remote server
-java -jar merv-client-api-1.0.0-jar-with-dependencies.jar http://your-server.com/api/v1 youruser yourpass
+java -jar merv-client-api-3.0.0-jar-with-dependencies.jar http://your-server.com/api/v1 youruser yourpass
 ```
 
 ### What the Demo Does
@@ -45,14 +45,14 @@ java -jar merv-client-api-1.0.0-jar-with-dependencies.jar http://your-server.com
 #### Option 1: Maven Dependency
 ```xml
 <dependency>
-    <groupId>org.teche</groupId>
+    <groupId>io.github.techelliiptica</groupId>
     <artifactId>merv-client-api</artifactId>
-    <version>1.0.0</version>
+    <version>3.0.0</version>
 </dependency>
 ```
 
 #### Option 2: Direct JAR Inclusion
-Add `merv-client-api-1.0.0-jar-with-dependencies.jar` to your project's classpath.
+Add `merv-client-api-3.0.0-jar-with-dependencies.jar` to your project's classpath.
 
 ### Basic Usage Example
 
