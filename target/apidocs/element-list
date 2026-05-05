@@ -6,4 +6,5 @@ org.teche.merv.client.example
 org.teche.merv.client.exception
 org.teche.merv.client.logging
 org.teche.merv.client.plugin
+org.teche.merv.client.report.html
 org.teche.merv.client.utils
