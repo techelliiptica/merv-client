@@ -15,6 +15,7 @@ import org.teche.merv.client.dto.TestSuiteRequest;
 import org.teche.merv.client.dto.TestSuiteResponse;
 import org.teche.merv.client.exception.MervClientException;
 import org.teche.merv.client.report.html.MervReportBranding;
+import org.teche.merv.client.report.html.MervConsolidatedFailureReasonsWriter;
 import org.teche.merv.client.report.html.MervReportsIndexHtmlWriter;
 import org.teche.merv.client.utils.FileUtils;
 import org.testng.IExecutionListener;
@@ -64,6 +65,37 @@ public class MervTestNGHandler implements IExecutionListener, ITestListener, IIn
     private static final ThreadLocal<UUID> THREAD_LOCAL_CASE_ID = new ThreadLocal<>();
     private static final ThreadLocal<List<LocalTestStep>> THREAD_LOCAL_PENDING_CONFIG_STEPS =
             ThreadLocal.withInitial(ArrayList::new);
+    private static final ThreadLocal<List<LocalTestStep>> THREAD_LOCAL_CUSTOM_STEPS =
+            ThreadLocal.withInitial(ArrayList::new);
+
+    /**
+     * Add a custom step to the current TestNG testcase (local report mode).
+     * <p>
+     * Call this from inside your test method (or from helpers called by the test).
+     * Steps are attached to the active testcase on the next listener update.
+     * </p>
+     */
+    public static void addCustomStep(String stepName) {
+        addCustomStep(stepName, "PASSED", null);
+    }
+
+    /**
+     * Add a custom step with explicit status.
+     *
+     * @param status One of PASSED / FAILED / SKIPPED / IN_PROGRESS
+     */
+    public static void addCustomStep(String stepName, String status, String errorMessage) {
+        LocalTestStep step = new LocalTestStep();
+        step.setId(UUID.randomUUID());
+        step.setTeststepName(stepName == null ? "Custom Step" : stepName);
+        step.setStepType("CUSTOM");
+        step.setStatus(status == null ? "PASSED" : status);
+        step.setErrorMessage(errorMessage);
+        Date now = new Date();
+        step.setStartTime(now);
+        step.setEndTime(now);
+        THREAD_LOCAL_CUSTOM_STEPS.get().add(step);
+    }
 
     private final Properties mervProp = new Properties();
     private final ConcurrentMap<UUID, LocalTestCase> localTestCases = new ConcurrentHashMap<>();
@@ -71,6 +103,8 @@ public class MervTestNGHandler implements IExecutionListener, ITestListener, IIn
     private final ConcurrentMap<String, UUID> localCaseByMethodKey = new ConcurrentHashMap<>();
     private final ConcurrentMap<String, UUID> serverCaseByMethodKey = new ConcurrentHashMap<>();
     private final ConcurrentMap<String, UUID> serverStepByMethodKey = new ConcurrentHashMap<>();
+    private final ConcurrentMap<UUID, Boolean> localCaseHasCustomFailure = new ConcurrentHashMap<>();
+    private final ConcurrentMap<UUID, Boolean> serverCaseHasCustomFailure = new ConcurrentHashMap<>();
     private volatile LocalTestSuite localTestSuite;
     private volatile String currentReportFolderPath;
     private volatile boolean stepScreenshotCaptureEnabled = false;
@@ -92,6 +126,120 @@ public class MervTestNGHandler implements IExecutionListener, ITestListener, IIn
         }
         THREAD_LOCAL_AUTOMATION_TOOL.set(automationToolName);
         THREAD_LOCAL_AUTOMATION_DRIVER.set(driverObject);
+    }
+
+    private void bindSharedStepApis() {
+        final boolean localMode = !isMervEnabled();
+        MervPluginSteps.bind(new MervPluginSteps.Adapter() {
+            @Override
+            public boolean isLocalMode() {
+                return localMode;
+            }
+
+            @Override
+            public void addLocalStep(MervPluginSteps.StepPayload payload) throws MervClientException {
+                UUID caseId = THREAD_LOCAL_CASE_ID.get();
+                if (caseId == null) {
+                    throw new MervClientException("No active test case found. Step creation must be called during an active test case execution.");
+                }
+                LocalTestCase localCase = localTestCases.get(caseId);
+                if (localCase == null) {
+                    throw new MervClientException("No active test case found. Step creation must be called during an active test case execution.");
+                }
+                LocalTestStep step = new LocalTestStep();
+                step.setId(UUID.randomUUID());
+                step.setTeststepName(payload.name);
+                step.setStepType(payload.type.getApiValue());
+                step.setStatus(payload.status);
+                step.setStartTime(new Date());
+                step.setExpected(payload.expected);
+                step.setActual(payload.actual);
+                step.setTestdata(payload.testdata);
+                step.setPrereq(payload.prereq);
+                step.setErrorMessage(payload.errorMessage);
+                localCase.getTestSteps().add(step);
+                if ("FAILED".equalsIgnoreCase(payload.status)) {
+                    localCase.setStatus("FAILED");
+                    if (localCase.getFailureReason() == null || localCase.getFailureReason().isBlank()) {
+                        localCase.setFailureReason(payload.errorMessage != null ? payload.errorMessage : "Validation/custom step failed");
+                    }
+                    localCaseHasCustomFailure.put(caseId, true);
+                }
+                persistLocalRuntimeSnapshot(false);
+            }
+
+            @Override
+            public TestStepResponse addServerStep(MervPluginSteps.StepPayload payload) throws MervClientException {
+                if (client == null) {
+                    throw new MervClientException("MervClient is not initialized. Make sure TestNG handler is properly configured.");
+                }
+                UUID caseId = THREAD_LOCAL_CASE_ID.get();
+                if (caseId == null) {
+                    throw new MervClientException("No active test case found. Step creation must be called during an active test case execution.");
+                }
+                TestStepRequest req = new TestStepRequest();
+                req.setTeststepName(payload.name);
+                req.setTestcaseId(caseId);
+                req.setStepType(payload.type.getApiValue());
+                req.setStatus(payload.status);
+                if (payload.expected != null) req.setExpected(payload.expected);
+                if (payload.actual != null) req.setActual(payload.actual);
+                if (payload.testdata != null) req.setTestdata(payload.testdata);
+                if (payload.prereq != null) req.setPrereq(payload.prereq);
+                TestStepResponse created = client.createTestStep(req);
+                if ("FAILED".equalsIgnoreCase(payload.status)) {
+                    try {
+                        client.updateTestCaseStatus(caseId, TestCaseStatus.FAILED);
+                    } catch (Exception ignored) {
+                        // best effort
+                    }
+                    serverCaseHasCustomFailure.put(caseId, true);
+                }
+                return created;
+            }
+        });
+    }
+
+    // ---- Shared step APIs (same as MervCucumberHandler via MervPluginSteps) ----
+    public static TestStepResponse addStep(
+            String stepName,
+            String stepType,
+            String expected,
+            String actual,
+            String testdata,
+            String prereq) throws MervClientException {
+        TestStepResponse res = MervPluginSteps.addStep(stepName, stepType, expected, actual, testdata, prereq);
+        // In TestNG local mode we don't throw; step is queued/attached to local report.
+        return res;
+    }
+
+    public static TestStepResponse addStep(String stepName, String stepType) throws MervClientException {
+        return addStep(stepName, stepType, null, null, null, null);
+    }
+
+    public static TestStepResponse addDataStep(String stepName, String testdata) throws MervClientException {
+        return MervPluginSteps.addDataStep(stepName, testdata);
+    }
+
+    public static TestStepResponse addValidationStep(
+            String stepName,
+            String expected,
+            String actual,
+            String testdata,
+            String prereq) throws MervClientException {
+        return MervPluginSteps.addValidationStep(stepName, expected, actual, testdata, prereq);
+    }
+
+    public static TestStepResponse addValidationStep(String stepName, String expected, String actual) throws MervClientException {
+        return MervPluginSteps.addValidationStep(stepName, expected, actual);
+    }
+
+    public static TestStepResponse addValidationStep(String stepName) throws MervClientException {
+        return MervPluginSteps.addValidationStep(stepName);
+    }
+
+    public static TestStepResponse info(String infoToAdd) throws MervClientException {
+        return MervPluginSteps.info(infoToAdd);
     }
 
     @Override
@@ -165,17 +313,20 @@ public class MervTestNGHandler implements IExecutionListener, ITestListener, IIn
             if (caseId != null) {
                 THREAD_LOCAL_CASE_ID.set(caseId);
             }
+            bindSharedStepApis();
             return;
         }
         LocalTestCase localCase = ensureCaseForResult(result);
         if (localCase != null && localCase.getId() != null) {
             THREAD_LOCAL_CASE_ID.set(localCase.getId());
+            bindSharedStepApis();
             List<LocalTestStep> pendingSteps = THREAD_LOCAL_PENDING_CONFIG_STEPS.get();
             if (pendingSteps != null && !pendingSteps.isEmpty()) {
                 localCase.getTestSteps().addAll(pendingSteps);
                 pendingSteps.clear();
                 persistLocalRuntimeSnapshot(false);
             }
+            drainCustomStepsInto(localCase);
         }
     }
 
@@ -186,9 +337,11 @@ public class MervTestNGHandler implements IExecutionListener, ITestListener, IIn
         }
         if (isMervEnabled()) {
             completeServerCase(result, "PASSED", null);
+            MervPluginSteps.clear();
             return;
         }
         completeCase(result, "PASSED", null);
+        MervPluginSteps.clear();
     }
 
     @Override
@@ -200,9 +353,11 @@ public class MervTestNGHandler implements IExecutionListener, ITestListener, IIn
         String reason = throwable == null ? "Test failed" : extractReadableErrorMessage(throwable);
         if (isMervEnabled()) {
             completeServerCase(result, "FAILED", reason);
+            MervPluginSteps.clear();
             return;
         }
         completeCase(result, "FAILED", reason);
+        MervPluginSteps.clear();
     }
 
     @Override
@@ -212,9 +367,11 @@ public class MervTestNGHandler implements IExecutionListener, ITestListener, IIn
         }
         if (isMervEnabled()) {
             completeServerCase(result, "SKIPPED", null);
+            MervPluginSteps.clear();
             return;
         }
         completeCase(result, "SKIPPED", null);
+        MervPluginSteps.clear();
     }
 
     @Override
@@ -292,6 +449,8 @@ public class MervTestNGHandler implements IExecutionListener, ITestListener, IIn
             return;
         }
 
+        drainCustomStepsInto(localCase);
+
         UUID stepId = readStepId(testResult);
         LocalTestStep step = stepId == null ? null : findStep(localCase, stepId);
         if (step != null) {
@@ -308,6 +467,21 @@ public class MervTestNGHandler implements IExecutionListener, ITestListener, IIn
         }
         THREAD_LOCAL_STEP_ID.remove();
         persistLocalRuntimeSnapshot(false);
+    }
+
+    private static void drainCustomStepsInto(LocalTestCase localCase) {
+        if (localCase == null) {
+            return;
+        }
+        List<LocalTestStep> custom = THREAD_LOCAL_CUSTOM_STEPS.get();
+        if (custom == null || custom.isEmpty()) {
+            return;
+        }
+        if (localCase.getTestSteps() == null) {
+            localCase.setTestSteps(new ArrayList<>());
+        }
+        localCase.getTestSteps().addAll(custom);
+        custom.clear();
     }
 
     private void initializeServerMode() {
@@ -410,6 +584,10 @@ public class MervTestNGHandler implements IExecutionListener, ITestListener, IIn
             return;
         }
         try {
+            if (Boolean.TRUE.equals(serverCaseHasCustomFailure.get(caseId))) {
+                client.updateTestCaseStatus(caseId, TestCaseStatus.FAILED);
+                return;
+            }
             if ("PASSED".equals(status)) {
                 client.updateTestCaseStatus(caseId, TestCaseStatus.PASSED);
             } else if ("FAILED".equals(status)) {
@@ -559,7 +737,11 @@ public class MervTestNGHandler implements IExecutionListener, ITestListener, IIn
             return;
         }
         localCase.setEndTime(new Date());
-        localCase.setStatus(status);
+        if ("FAILED".equalsIgnoreCase(localCase.getStatus()) || Boolean.TRUE.equals(localCaseHasCustomFailure.get(localCase.getId()))) {
+            localCase.setStatus("FAILED");
+        } else {
+            localCase.setStatus(status);
+        }
         if (failureReason != null && !failureReason.isBlank()) {
             localCase.setFailureReason(failureReason);
         }
@@ -664,6 +846,7 @@ public class MervTestNGHandler implements IExecutionListener, ITestListener, IIn
                 return;
             }
             MervReportsIndexHtmlWriter.write(base.trim());
+            MervConsolidatedFailureReasonsWriter.write(base.trim());
         } catch (Exception e) {
             System.err.println("Could not update reports index: " + e.getMessage());
         }
@@ -743,7 +926,7 @@ public class MervTestNGHandler implements IExecutionListener, ITestListener, IIn
     private String resolveCaseName(ITestResult result) {
         String className = result.getTestClass() == null ? "UnknownClass" : result.getTestClass().getRealClass().getSimpleName();
         String methodName = result.getMethod() == null ? "unknownMethod" : result.getMethod().getMethodName();
-        return className + "." + methodName;
+        return className + "." + methodName + resolveParameterSuffix(result);
     }
 
     private List<String> resolveGroups(ITestResult result) {
@@ -826,6 +1009,37 @@ public class MervTestNGHandler implements IExecutionListener, ITestListener, IIn
         String base = resultKey(result);
         String methodName = method != null && method.getTestMethod() != null ? method.getTestMethod().getMethodName() : "unknown";
         return base + "::" + methodName;
+    }
+
+    private String resolveParameterSuffix(ITestResult result) {
+        if (result == null || result.getParameters() == null || result.getParameters().length == 0) {
+            return "";
+        }
+        Object[] params = result.getParameters();
+        StringBuilder sb = new StringBuilder(" [");
+        for (int i = 0; i < params.length; i++) {
+            if (i > 0) {
+                sb.append(", ");
+            }
+            sb.append(safeParamValue(params[i]));
+        }
+        sb.append("]");
+        return sb.toString();
+    }
+
+    private String safeParamValue(Object value) {
+        if (value == null) {
+            return "null";
+        }
+        try {
+            String text = String.valueOf(value);
+            if (text.length() > 80) {
+                return text.substring(0, 77) + "...";
+            }
+            return text.replace("\n", "\\n").replace("\r", "\\r");
+        } catch (Exception e) {
+            return value.getClass().getSimpleName();
+        }
     }
 
     private String resultMethodKey(ITestResult result) {
@@ -948,6 +1162,8 @@ public class MervTestNGHandler implements IExecutionListener, ITestListener, IIn
         THREAD_LOCAL_STEP_ID.remove();
         THREAD_LOCAL_CASE_ID.remove();
         THREAD_LOCAL_PENDING_CONFIG_STEPS.remove();
+        THREAD_LOCAL_CUSTOM_STEPS.remove();
+        MervPluginSteps.clear();
         THREAD_LOCAL_AUTOMATION_TOOL.remove();
         THREAD_LOCAL_AUTOMATION_DRIVER.remove();
     }

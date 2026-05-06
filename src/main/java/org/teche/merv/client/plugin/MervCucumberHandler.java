@@ -10,6 +10,7 @@ import org.teche.merv.client.utils.FileUtils;
 import org.teche.merv.client.utils.ReportsDeleteServer;
 import org.teche.merv.client.report.html.MervHtmlEscape;
 import org.teche.merv.client.report.html.MervReportBranding;
+import org.teche.merv.client.report.html.MervConsolidatedFailureReasonsWriter;
 import org.teche.merv.client.report.html.MervReportsIndexHtmlWriter;
 
 import java.io.File;
@@ -244,6 +245,75 @@ public class MervCucumberHandler implements ConcurrentEventListener {
         }
     }
 
+    private static void bindSharedStepApis() {
+        MervPluginSteps.bind(new MervPluginSteps.Adapter() {
+            @Override
+            public boolean isLocalMode() {
+                return !isMervEnabled();
+            }
+
+            @Override
+            public void addLocalStep(MervPluginSteps.StepPayload payload) throws MervClientException {
+                UUID testCaseId = getActiveTestCaseId();
+                if (testCaseId == null) {
+                    throw new MervClientException("No active test case found. Step creation must be called during an active test case execution.");
+                }
+                LocalTestStep localStep = new LocalTestStep();
+                localStep.setId(UUID.randomUUID());
+                localStep.setTeststepName(payload.name);
+                localStep.setStepType(payload.type.getApiValue());
+                localStep.setStatus(payload.status);
+                localStep.setStartTime(new Date());
+                localStep.setExpected(payload.expected);
+                localStep.setActual(payload.actual);
+                localStep.setTestdata(payload.testdata);
+                localStep.setPrereq(payload.prereq);
+                localStep.setErrorMessage(payload.errorMessage);
+                if (localTestCases.containsKey(testCaseId)) {
+                    LocalTestCase tc = localTestCases.get(testCaseId);
+                    tc.getTestSteps().add(localStep);
+                    if ("FAILED".equalsIgnoreCase(payload.status)) {
+                        tc.setStatus("FAILED");
+                        if (tc.getFailureReason() == null || tc.getFailureReason().isBlank()) {
+                            tc.setFailureReason(payload.errorMessage != null ? payload.errorMessage : "Validation/custom step failed");
+                        }
+                    }
+                }
+                localTestSteps.put(localStep.getId(), localStep);
+            }
+
+            @Override
+            public org.teche.merv.client.dto.TestStepResponse addServerStep(MervPluginSteps.StepPayload payload) throws MervClientException {
+                MervClient client = sharedClient;
+                UUID testCaseId = getActiveTestCaseId();
+                if (client == null) {
+                    throw new MervClientException("MervClient is not initialized. Make sure MervCucumberHandler is properly configured.");
+                }
+                if (testCaseId == null) {
+                    throw new MervClientException("No active test case found. Step creation must be called during an active test case execution.");
+                }
+                org.teche.merv.client.dto.TestStepRequest request = new org.teche.merv.client.dto.TestStepRequest();
+                request.setTeststepName(payload.name);
+                request.setTestcaseId(testCaseId);
+                request.setStepType(payload.type.getApiValue());
+                request.setStatus(payload.status);
+                if (payload.expected != null) request.setExpected(payload.expected);
+                if (payload.actual != null) request.setActual(payload.actual);
+                if (payload.testdata != null) request.setTestdata(payload.testdata);
+                if (payload.prereq != null) request.setPrereq(payload.prereq);
+                org.teche.merv.client.dto.TestStepResponse created = client.createTestStep(request);
+                if ("FAILED".equalsIgnoreCase(payload.status)) {
+                    try {
+                        client.updateTestCaseStatus(testCaseId, TestCaseStatus.FAILED);
+                    } catch (Exception ignored) {
+                        // best effort
+                    }
+                }
+                return created;
+            }
+        });
+    }
+
     private void mervTestFinish(TestCaseFinished testcase){
         UUID tcId = threadLocalActiveTestCaseId.get();
         if (!isMervEnabled()) {
@@ -257,13 +327,18 @@ public class MervCucumberHandler implements ConcurrentEventListener {
                         localTestCase.setFailureReason(extractReadableErrorMessage(testcase.getResult().getError()));
                     }
                 }else if(testcase.getResult().getStatus() == Status.SKIPPED){
-                    localTestCase.setStatus("SKIPPED");
+                    if (!"FAILED".equalsIgnoreCase(localTestCase.getStatus())) {
+                        localTestCase.setStatus("SKIPPED");
+                    }
                 }else{
-                    localTestCase.setStatus("PASSED");
+                    if (!"FAILED".equalsIgnoreCase(localTestCase.getStatus())) {
+                        localTestCase.setStatus("PASSED");
+                    }
                 }
                 persistLocalRuntimeSnapshot(false);
             }
             threadLocalActiveTestCaseId.remove();
+            MervPluginSteps.clear();
             return;
         }
 
@@ -278,9 +353,11 @@ public class MervCucumberHandler implements ConcurrentEventListener {
                 e.printStackTrace();
             }
         }
+        MervPluginSteps.clear();
     }
     private void mervTestStart(TestCaseStarted testcase){
         try {
+            bindSharedStepApis();
             if (!isMervEnabled()) {
                 // Create local test case
                 LocalTestCase localTestCase = new LocalTestCase();
@@ -700,83 +777,8 @@ public class MervCucumberHandler implements ConcurrentEventListener {
             String actual,
             String testdata,
             String prereq) throws MervClientException {
-        if (!isMervEnabled()) {
-            // When Merv is disabled, add step to local storage
-            UUID testCaseId = getActiveTestCaseId();
-            if (testCaseId == null) {
-                throw new MervClientException("No active test case found. Step creation must be called during an active test case execution.");
-            }
-
-            if (stepName == null || stepName.trim().isEmpty()) {
-                throw new MervClientException("Step name is required and cannot be empty.");
-            }
-
-            LocalTestStep localStep = new LocalTestStep();
-            localStep.setId(UUID.randomUUID());
-            localStep.setTeststepName(stepName);
-            localStep.setStepType(stepType);
-            localStep.setStatus("PENDING");
-            localStep.setStartTime(new Date());
-            localStep.setExpected(expected);
-            localStep.setActual(actual);
-            localStep.setTestdata(testdata);
-            localStep.setPrereq(prereq);
-
-            if (localTestCases.containsKey(testCaseId)) {
-                localTestCases.get(testCaseId).getTestSteps().add(localStep);
-            }
-            localTestSteps.put(localStep.getId(), localStep);
-
-            // Return a mock response (since we can't return null and the return type is required)
-            // Note: This won't work perfectly, but it allows the code to continue
-            throw new MervClientException("Merv is disabled. Steps are being stored locally and will be included in the local report.");
-        }
-
-        MervClient client = sharedClient;
-        UUID testCaseId = getActiveTestCaseId();
-
-        if (client == null) {
-            throw new MervClientException("MervClient is not initialized. Make sure MervCucumberHandler is properly configured.");
-        }
-
-        if (testCaseId == null) {
-            throw new MervClientException("No active test case found. Step creation must be called during an active test case execution.");
-        }
-
-        if (stepName == null || stepName.trim().isEmpty()) {
-            throw new MervClientException("Step name is required and cannot be empty.");
-        }
-
-        // Convert user-friendly step type to API format
-        String apiStepType;
-        try {
-            org.teche.merv.client.dto.StepType stepTypeEnum = org.teche.merv.client.dto.StepType.fromString(stepType);
-            apiStepType = stepTypeEnum.getApiValue();
-        } catch (IllegalArgumentException e) {
-            throw new MervClientException("Invalid step type: " + stepType + ". Valid values are: testdata, assertion, information", e);
-        }
-
-        // Create test step request
-        org.teche.merv.client.dto.TestStepRequest request = new org.teche.merv.client.dto.TestStepRequest();
-        request.setTeststepName(stepName);
-        request.setTestcaseId(testCaseId);
-        request.setStepType(apiStepType);
-        request.setStatus("PENDING");
-
-        if (expected != null) {
-            request.setExpected(expected);
-        }
-        if (actual != null) {
-            request.setActual(actual);
-        }
-        if (testdata != null) {
-            request.setTestdata(testdata);
-        }
-        if (prereq != null) {
-            request.setPrereq(prereq);
-        }
-
-        return client.createTestStep(request);
+        // In local mode we enqueue into the local JSON; in server mode we create API step.
+        return MervPluginSteps.addStep(stepName, stepType, expected, actual, testdata, prereq);
     }
 
     /**
@@ -825,35 +827,30 @@ public class MervCucumberHandler implements ConcurrentEventListener {
             org.teche.merv.client.dto.FileType fileType,
             String prereq) throws MervClientException {
         if (!isMervEnabled()) {
-            // When Merv is disabled, add step to local storage
+            // Local mode: just record file metadata in testdata.
             UUID testCaseId = getActiveTestCaseId();
             if (testCaseId == null) {
                 throw new MervClientException("No active test case found. Step creation must be called during an active test case execution.");
             }
-
             if (stepName == null || stepName.trim().isEmpty()) {
                 throw new MervClientException("Step name is required and cannot be empty.");
             }
-
             if (file == null || !file.exists()) {
                 throw new MervClientException("File does not exist: " + (file != null ? file.getPath() : "null"));
             }
-
             LocalTestStep localStep = new LocalTestStep();
             localStep.setId(UUID.randomUUID());
             localStep.setTeststepName(stepName);
             localStep.setStepType("TEST_DATA");
-            localStep.setStatus("PENDING");
+            localStep.setStatus("PASSED");
             localStep.setStartTime(new Date());
             localStep.setTestdata("File: " + file.getName() + " (Type: " + (fileType != null ? fileType.getType() : "unknown") + ")");
             localStep.setPrereq(prereq);
-
             if (localTestCases.containsKey(testCaseId)) {
                 localTestCases.get(testCaseId).getTestSteps().add(localStep);
             }
             localTestSteps.put(localStep.getId(), localStep);
-
-            throw new MervClientException("Merv is disabled. Steps are being stored locally and will be included in the local report.");
+            return null;
         }
 
         MervClient client = sharedClient;
@@ -921,6 +918,13 @@ public class MervCucumberHandler implements ConcurrentEventListener {
         return addStep(stepName, StepType.ASSERTION.getApiValue() , expected, actual, testdata, prereq);
     }
 
+    public static org.teche.merv.client.dto.TestStepResponse addValidationStep(
+            String stepName,
+            String expected,
+            String actual) throws MervClientException {
+        return addValidationStep(stepName, expected, actual, null, null);
+    }
+
     /**
      * Static method to add a validation/assertion step with minimal parameters
      *
@@ -941,21 +945,8 @@ public class MervCucumberHandler implements ConcurrentEventListener {
      * @return TestStepResponse with the created test step details
      * @throws MervClientException if step creation fails or no active test case/client is available
      */
-    public static org.teche.merv.client.dto.TestStepResponse addPrerequisiteStep(
-            String stepName,
-            String prereq) throws MervClientException {
-        return addStep(stepName, StepType.INFORMATION.getValue(), null, null, null, prereq);
-    }
-
-    /**
-     * Static method to add a prerequisite step with minimal parameters
-     *
-     * @param stepName The name/description of the test step
-     * @return TestStepResponse with the created test step details
-     * @throws MervClientException if step creation fails or no active test case/client is available
-     */
-    public static org.teche.merv.client.dto.TestStepResponse addPrerequisiteStep(String stepName) throws MervClientException {
-        return addPrerequisiteStep(stepName,  null);
+    public static org.teche.merv.client.dto.TestStepResponse info(String infoToAdd) throws MervClientException {
+        return addStep("Info", StepType.INFORMATION.getValue(), null, null, null, infoToAdd);
     }
 
     /**
@@ -1330,6 +1321,10 @@ public class MervCucumberHandler implements ConcurrentEventListener {
         html.append(".sidebar-item.active .sidebar-item-name,.sidebar-item.active .sidebar-status-tag{color:#222;font-weight:600;}");
         html.append(".content-area{margin-left:400px;flex:1;padding:20px;}");
         html.append(".report-toolbar{margin-bottom:14px;padding-bottom:12px;border-bottom:1px solid #eee;}");
+        html.append(".report-toolbar{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;}");
+        html.append(".shots-toggle{display:inline-flex;align-items:center;gap:8px;font-size:12px;font-weight:700;color:#444;user-select:none;}");
+        html.append(".shots-toggle input{width:16px;height:16px;accent-color:#e90101;}");
+        html.append("body.hide-shots .screenshots,body.hide-shots .screenshot-movie,body.hide-shots .screenshot-movie-jump{display:none !important;}");
         html.append(".local-dash{color:#c20000;font-weight:600;text-decoration:none;font-size:14px;}");
         html.append(".local-dash:hover{text-decoration:underline;}");
         html.append(".container{max-width:1200px;margin:0 auto;background:#fff;padding:24px;border-radius:10px;box-shadow:0 2px 12px rgba(0,0,0,.08);}");
@@ -1371,6 +1366,20 @@ public class MervCucumberHandler implements ConcurrentEventListener {
         html.append(".failure-reasons-panel{background:#fff;border:1px solid #eee;border-radius:8px;padding:14px 16px;box-shadow:0 2px 4px rgba(0,0,0,.06);max-height:420px;overflow:auto;}");
         html.append(".failure-reasons-panel h3{margin:0 0 12px 0;font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:#c20000;}");
         html.append(".failure-reason-empty{color:#888;font-size:13px;margin:0;}");
+        html.append(".cons-fail-panel{margin-top:14px;border-top:1px dashed #e5e7eb;padding-top:12px;}");
+        html.append(".cons-fail-head{display:flex;align-items:center;justify-content:space-between;gap:10px;cursor:pointer;user-select:none;}");
+        html.append(".cons-fail-title{margin:0;font-size:13px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:#111;}");
+        html.append(".cons-fail-caret{font-size:10px;color:#c20000;transition:transform .2s ease;}");
+        html.append(".cons-fail-caret.collapsed{transform:rotate(-90deg);}");
+        html.append(".cons-fail-body{margin-top:10px;}");
+        html.append(".cons-fail-group{border:1px solid #eef0f3;border-radius:10px;padding:10px 12px;background:#fcfcfd;margin:10px 0;}");
+        html.append(".cons-fail-row{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;}");
+        html.append(".cons-fail-text{flex:1;min-width:0;font-size:12px;color:#222;word-break:break-word;}");
+        html.append(".cons-fail-count{flex-shrink:0;font-weight:900;color:#c82333;}");
+        html.append(".cons-fail-toggle{margin-top:8px;font-size:12px;font-weight:700;color:#0d47a1;cursor:pointer;display:inline-block;}");
+        html.append(".cons-fail-list{margin-top:8px;display:none;flex-direction:column;gap:6px;}");
+        html.append(".cons-fail-list.open{display:flex;}");
+        html.append(".cons-fail-case{font-size:12px;color:#374151;}");
         html.append("a.failure-reason-row{text-decoration:none;color:inherit;display:flex;}");
         html.append(".failure-reason-row{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;padding:10px 8px;border-bottom:1px solid #f0f0f0;cursor:pointer;border-radius:6px;margin:0 -4px;}");
         html.append(".failure-reason-row:last-child{border-bottom:none;}");
@@ -1423,6 +1432,12 @@ public class MervCucumberHandler implements ConcurrentEventListener {
         html.append(".test-step-hd{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin:0 0 6px;flex-wrap:wrap;}");
         html.append(".test-step-title{margin:0;flex:1;min-width:0;font-size:14px;font-weight:600;color:#333;line-height:1.35;word-break:break-word;}");
         html.append(".test-step-badges{display:inline-flex;align-items:center;gap:10px;flex-shrink:0;margin-left:auto;}");
+        html.append(".step-type-pill{display:inline-flex;align-items:center;padding:3px 10px;border-radius:999px;font-size:10px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;border:1px solid #d0d7de;background:#eef2f6;color:#364152;white-space:nowrap;}");
+        html.append(".step-type-pill.data{background:#eaf1ff;color:#153a7a;border-color:#cfdcff;}.step-type-pill.assert{background:#fff0f0;color:#8a1f1f;border-color:#ffd4d4;}.step-type-pill.info{background:#f3f4f6;color:#374151;border-color:#e5e7eb;}");
+        html.append(".step-meta{margin:6px 0 0 0;padding:8px 10px;background:#f7f8fa;border:1px solid #e6e8ec;border-radius:8px;font-size:12px;}");
+        html.append(".step-meta-row{display:flex;gap:10px;align-items:flex-start;flex-wrap:wrap;margin:2px 0;}");
+        html.append(".step-meta-key{min-width:88px;font-weight:700;color:#555;text-transform:uppercase;letter-spacing:.06em;font-size:10px;}");
+        html.append(".step-meta-val{flex:1;min-width:0;color:#222;white-space:pre-wrap;word-break:break-word;}");
         html.append(".step-status-pill{display:inline-flex;align-items:center;padding:3px 10px;border-radius:999px;font-size:10px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;border:1px solid #d0d7de;background:#eef2f6;color:#364152;white-space:nowrap;}");
         html.append(".step-status-pill.passed{background:#e8f5e9;color:#1b5e20;border-color:#c8e6c9;}");
         html.append(".step-status-pill.failed{background:#ffebee;color:#b71c1c;border-color:#ffcdd2;}");
@@ -1444,7 +1459,7 @@ public class MervCucumberHandler implements ConcurrentEventListener {
         html.append("<button class='filter-btn' data-status='skipped' onclick=\"filterByStatus('skipped')\">Skip</button>");
         html.append("</div><h2>Test Cases</h2><div id='sidebar-list'></div></div>");
         html.append("<div class='content-area'><div class='container'>");
-        html.append("<div class='report-toolbar'><a class='local-dash' href='../../index.html'>Local Dashboard</a></div>");
+        html.append("<div class='report-toolbar'><a class='local-dash' href='../../index.html'>Local Dashboard</a><label class='shots-toggle'><input id='toggle-shots' type='checkbox' checked> Show screenshots</label></div>");
         html.append("<h1 id='suite-title'>Merv Live Runtime Report <span id='run-state' class='status-pill'>RUNNING</span></h1>");
         html.append("<p id='live-banner' class='live-banner'></p>");
         html.append("<p id='report-folder' class='report-folder-meta'></p>");
@@ -1480,16 +1495,23 @@ public class MervCucumberHandler implements ConcurrentEventListener {
         html.append("function statusTag(st){var x=c(st);if(x==='passed')return{txt:'PASS',cls:'pass'};if(x==='failed')return{txt:'FAIL',cls:'fail'};if(x==='skipped')return{txt:'SKIP',cls:'skip'};return{txt:'ACTIVE',cls:'active'};}");
         html.append("function fmtStepDelta(ms){if(ms==null||ms<0||isNaN(ms))return'\u2014';var s=Math.floor(ms/1000);var m=Math.floor(ms%1000);return s+'s '+m+'ms';}");
         html.append("function stepSuiteRunning(){try{return !!(latestData&&latestData.running===true&&!isStaleAborted(latestData));}catch(e){return false;}}");
-        html.append("function hasPriorFailedStep(steps,si){if(!steps||typeof si!=='number')return false;for(var j=0;j<si;j++){if(c((steps[j]&&steps[j].status)||'')==='failed')return true;}return false;}");
+        html.append("function hasPriorFailedStep(steps,si){return false;}");
         html.append("function stepRowUi(step){var raw=c(step&&step.status||'');var end=parseTs(step&&step.endTime);if(raw==='pending')return{p:'SKIP',k:'skipped'};if(raw==='skipped')return{p:'SKIP',k:'skipped'};if(raw==='passed')return{p:'PASS',k:'passed'};if(raw==='failed')return{p:'FAIL',k:'failed'};if(raw==='in_progress'){if(!end&&!stepSuiteRunning())return{p:'SKIP',k:'skipped'};return{p:'IN PROGRESS',k:'in_progress'};}if(!raw)return{p:'SKIP',k:'skipped'};return{p:'SKIP',k:'skipped'};}");
         html.append("function drawPieChart(passed,failed,skipped){var canvas=document.getElementById('pieChart');if(!canvas)return;var ctx=canvas.getContext('2d');var w=canvas.width,h=canvas.height,cx=w/2,cy=h/2,r=Math.min(w,h)*0.36;ctx.clearRect(0,0,w,h);var total=passed+failed+skipped;if(total===0){ctx.fillStyle='#eee';ctx.beginPath();ctx.arc(cx,cy,r,0,2*Math.PI);ctx.fill();return;}var start=-Math.PI/2;var pa=(passed/total)*2*Math.PI,fa=(failed/total)*2*Math.PI,ka=(skipped/total)*2*Math.PI;if(passed>0){ctx.beginPath();ctx.moveTo(cx,cy);ctx.arc(cx,cy,r,start,start+pa);ctx.closePath();ctx.fillStyle='#4CAF50';ctx.fill();start+=pa;}if(failed>0){ctx.beginPath();ctx.moveTo(cx,cy);ctx.arc(cx,cy,r,start,start+fa);ctx.closePath();ctx.fillStyle='#f44336';ctx.fill();start+=fa;}if(skipped>0){ctx.beginPath();ctx.moveTo(cx,cy);ctx.arc(cx,cy,r,start,start+ka);ctx.closePath();ctx.fillStyle='#FF9800';ctx.fill();}ctx.beginPath();ctx.arc(cx,cy,r,0,2*Math.PI);ctx.strokeStyle='#fff';ctx.lineWidth=2;ctx.stroke();}");
         html.append("function toggleChartBlock(){var body=document.getElementById('chart-block-body');var head=document.getElementById('chart-block-head');if(!body||!head)return;var collapsed=body.classList.toggle('collapsed');head.classList.toggle('collapsed',collapsed);head.setAttribute('aria-expanded',collapsed?'false':'true');if(!collapsed&&typeof drawPieChart==='function'&&latestData&&latestData.testSuite){var tc=latestData.testSuite.testCases||[],p=0,f=0,k=0;tc.forEach(function(t){if(t.status==='PASSED')p++;else if(t.status==='FAILED')f++;else if(t.status==='SKIPPED')k++;});drawPieChart(p,f,k);}}");
         html.append("function parseTs(v){if(v==null||v===undefined)return null;if(typeof v==='number'){var n=v;return new Date(n>1e11?n:n*1000);}if(typeof v==='string'){var s=new Date(v);return isNaN(s.getTime())?null:s;}if(typeof v==='object'&&v){if(typeof v.time==='number')return new Date(v.time);if(Array.isArray(v)&&v.length>=3)return new Date(v[0],(v[1]||1)-1,v[2]||1,v[3]||0,v[4]||0,v[5]||0);}var t=new Date(v);return isNaN(t.getTime())?null:t;}");
         html.append("function fmtHms(ms){var d=new Date(ms);function z(x){return(x<10?'0':'')+x;}return z(d.getHours())+':'+z(d.getMinutes())+':'+z(d.getSeconds());}");
         html.append("function floor5s(t){return Math.floor(t/5000)*5000;}");
-        html.append("function drawTrendChart(tc,suite,running){try{var SLOT=5000;var canvas=document.getElementById('trendChart');if(!canvas)return;var ctx=canvas.getContext('2d');if(!ctx)return;var W=canvas.width,H=canvas.height;if(W<10||H<10)return;ctx.clearRect(0,0,W,H);var padL=40,padR=8,padT=4,padB=40,pw=W-padL-padR,ph=H-padT-padB;var passC={},failC={};(tc||[]).forEach(function(row){var et=parseTs(row.endTime);if(!et)return;var bk=floor5s(et.getTime());var st=String(row.status||'').toUpperCase();if(st==='PASSED')passC[bk]=(passC[bk]||0)+1;else if(st==='FAILED')failC[bk]=(failC[bk]||0)+1;});var suiteStart=suite&&parseTs(suite.startTime);var nowMs=Date.now();var minMs=null,maxMs=null;if(suiteStart)minMs=floor5s(suiteStart.getTime());function upd(ms){if(minMs==null||ms<minMs)minMs=ms;if(maxMs==null||ms>maxMs)maxMs=ms;}Object.keys(passC).forEach(function(k){upd(+k);});Object.keys(failC).forEach(function(k){upd(+k);});if(minMs==null){minMs=floor5s(nowMs);maxMs=minMs;}if(maxMs==null)maxMs=minMs;var curSlot=floor5s(nowMs);if(running&&curSlot>maxMs)maxMs=curSlot;if(maxMs<minMs)maxMs=minMs;var buckets=[];for(var m=minMs;m<=maxMs;m+=SLOT)buckets.push({t:m,p:passC[m]||0,f:failC[m]||0});if(buckets.length>180)buckets=buckets.slice(-180);var n=buckets.length;if(n===0){buckets.push({t:minMs,p:0,f:0});n=1;}var peaks=buckets.map(function(bk){return Math.max(bk.p,bk.f);});var maxY=Math.max(1,peaks.length?Math.max.apply(null,peaks):0);function xCenter(i){return padL+(n<=1?pw/2:(i/(n-1))*pw);}function yVal(v){return padT+ph-(v/maxY)*ph;}ctx.strokeStyle='#ddd';ctx.lineWidth=1;ctx.setLineDash([3,4]);var yTicks=4,yi,xi;for(yi=0;yi<=yTicks;yi++){var yy=padT+(yi/yTicks)*ph;ctx.beginPath();ctx.moveTo(padL,yy);ctx.lineTo(padL+pw,yy);ctx.stroke();}var xStep=Math.max(1,Math.ceil(n/8));for(xi=0;xi<n;xi+=xStep){var xx=xCenter(xi);ctx.beginPath();ctx.moveTo(xx,padT);ctx.lineTo(xx,padT+ph);ctx.stroke();}ctx.setLineDash([]);ctx.strokeStyle='#333';ctx.beginPath();ctx.moveTo(padL,padT+ph);ctx.lineTo(padL+pw,padT+ph);ctx.stroke();ctx.beginPath();ctx.moveTo(padL,padT);ctx.lineTo(padL,padT+ph);ctx.stroke();var slotW=pw/Math.max(n,1);var gw=Math.min(slotW*0.85,36);var barW=Math.max(2,(gw-4)/2);buckets.forEach(function(bk,idx){var cx=xCenter(idx),x0=cx-gw/2,y0=padT+ph;if(bk.p>0){var y1=yVal(bk.p);ctx.fillStyle='#4CAF50';ctx.fillRect(x0,y1,barW,y0-y1);}if(bk.f>0){var y2=yVal(bk.f);ctx.fillStyle='#f44336';ctx.fillRect(x0+barW+4,y2,barW,y0-y2);}});ctx.fillStyle='#555';ctx.font='11px Arial';ctx.textAlign='right';ctx.textBaseline='middle';for(yi=0;yi<=yTicks;yi++){var yv=Math.round((yTicks-yi)*(maxY/yTicks));var yy2=padT+(yi/yTicks)*ph;ctx.fillText(String(yv),padL-4,yy2);}ctx.fillStyle='#444';ctx.font='9px Arial';ctx.textAlign='right';ctx.textBaseline='top';for(xi=0;xi<n;xi+=xStep){var lbl=fmtHms(buckets[xi].t);var xx2=xCenter(xi);ctx.save();ctx.translate(xx2,padT+ph+4);ctx.rotate(-Math.PI/5);ctx.fillText(lbl,0,0);ctx.restore();}var tPass=buckets.reduce(function(a,bk){return a+bk.p;},0),tFail=buckets.reduce(function(a,bk){return a+bk.f;},0);var el=document.getElementById('trend-meta');if(el)el.textContent=tPass+' pass · '+tFail+' fail in window · '+n+' × 5s bucket(s)'+(running?' · refresh 5s':'');}catch(err){var em=document.getElementById('trend-meta');if(em)em.textContent='Trend chart could not render: '+(err&&err.message?err.message:String(err));}}");        html.append("function renderFailureReasons(testCases){var panel=document.getElementById('failure-reasons-panel');if(!panel)return;var groups={};(testCases||[]).forEach(function(t,i){if(String(t.status||'').toUpperCase()!=='FAILED')return;var r=String(t.failureReason||'').trim();if(!r)r='(No failure message)';var firstShot='';var steps=t.testSteps||[];for(var si=0;si<steps.length&&!firstShot;si++){var ss=(steps[si]&&steps[si].screenshots)||[];if(ss.length)firstShot=String(ss[0]||'');}if(!groups[r])groups[r]=[];groups[r].push({id:'tc-'+i,name:String(t.testcaseName||('Test case '+(i+1))),shot:firstShot});});var keys=Object.keys(groups).sort(function(a,b){return groups[b].length-groups[a].length;});var h='<h3>Failure reasons</h3>';if(!keys.length){h+='<p class=\"failure-reason-empty\">No failures yet.</p>';}else{keys.forEach(function(k){var arr=groups[k]||[];h+='<div class=\"failure-reason-group\"><div class=\"failure-reason-row\"><span class=\"failure-reason-text\">'+e(k)+'</span><span class=\"failure-reason-count\">'+arr.length+'</span></div><div class=\"failure-related-cases\">';arr.forEach(function(ca){h+='<div class=\"failure-case-item\"><button type=\"button\" class=\"failure-case-link\" data-case-id=\"'+e(ca.id)+'\">'+e(ca.name)+'</button>';if(ca.shot){var sp=('../'+String(ca.shot)).replace(/\\\\/g,'/');h+='<img class=\"failure-case-thumb\" src=\"'+e(sp)+'\" alt=\"Screenshot\" onclick=\"window.open(this.src,\\'_blank\\')\">';}h+='</div>';});h+='</div></div>';});}panel.innerHTML=h;panel.querySelectorAll('.failure-case-link[data-case-id]').forEach(function(btn){btn.addEventListener('click',function(){var cid=btn.getAttribute('data-case-id');if(!cid)return;selectedId=cid;renderSelectedCase((latestData&&latestData.testSuite&&latestData.testSuite.testCases)||[]);renderSidebar((latestData&&latestData.testSuite&&latestData.testSuite.testCases)||[]);setTimeout(scrollToTestcasePanel,0);});});}");
+        html.append("function drawTrendChart(tc,suite,running){try{var SLOT=5000;var canvas=document.getElementById('trendChart');if(!canvas)return;var ctx=canvas.getContext('2d');if(!ctx)return;var W=canvas.width,H=canvas.height;if(W<10||H<10)return;ctx.clearRect(0,0,W,H);var padL=40,padR=8,padT=4,padB=40,pw=W-padL-padR,ph=H-padT-padB;var passC={},failC={};(tc||[]).forEach(function(row){var et=parseTs(row.endTime);if(!et)return;var bk=floor5s(et.getTime());var st=String(row.status||'').toUpperCase();if(st==='PASSED')passC[bk]=(passC[bk]||0)+1;else if(st==='FAILED')failC[bk]=(failC[bk]||0)+1;});var suiteStart=suite&&parseTs(suite.startTime);var nowMs=Date.now();var minMs=null,maxMs=null;if(suiteStart)minMs=floor5s(suiteStart.getTime());function upd(ms){if(minMs==null||ms<minMs)minMs=ms;if(maxMs==null||ms>maxMs)maxMs=ms;}Object.keys(passC).forEach(function(k){upd(+k);});Object.keys(failC).forEach(function(k){upd(+k);});if(minMs==null){minMs=floor5s(nowMs);maxMs=minMs;}if(maxMs==null)maxMs=minMs;var curSlot=floor5s(nowMs);if(running&&curSlot>maxMs)maxMs=curSlot;if(maxMs<minMs)maxMs=minMs;var buckets=[];for(var m=minMs;m<=maxMs;m+=SLOT)buckets.push({t:m,p:passC[m]||0,f:failC[m]||0});if(buckets.length>180)buckets=buckets.slice(-180);var n=buckets.length;if(n===0){buckets.push({t:minMs,p:0,f:0});n=1;}var peaks=buckets.map(function(bk){return Math.max(bk.p,bk.f);});var maxY=Math.max(1,peaks.length?Math.max.apply(null,peaks):0);function xCenter(i){return padL+(n<=1?pw/2:(i/(n-1))*pw);}function yVal(v){return padT+ph-(v/maxY)*ph;}ctx.strokeStyle='#ddd';ctx.lineWidth=1;ctx.setLineDash([3,4]);var yTicks=4,yi,xi;for(yi=0;yi<=yTicks;yi++){var yy=padT+(yi/yTicks)*ph;ctx.beginPath();ctx.moveTo(padL,yy);ctx.lineTo(padL+pw,yy);ctx.stroke();}var xStep=Math.max(1,Math.ceil(n/8));for(xi=0;xi<n;xi+=xStep){var xx=xCenter(xi);ctx.beginPath();ctx.moveTo(xx,padT);ctx.lineTo(xx,padT+ph);ctx.stroke();}ctx.setLineDash([]);ctx.strokeStyle='#333';ctx.beginPath();ctx.moveTo(padL,padT+ph);ctx.lineTo(padL+pw,padT+ph);ctx.stroke();ctx.beginPath();ctx.moveTo(padL,padT);ctx.lineTo(padL,padT+ph);ctx.stroke();var slotW=pw/Math.max(n,1);var gw=Math.min(slotW*0.85,36);var barW=Math.max(2,(gw-4)/2);buckets.forEach(function(bk,idx){var cx=xCenter(idx),x0=cx-gw/2,y0=padT+ph;if(bk.p>0){var y1=yVal(bk.p);ctx.fillStyle='#4CAF50';ctx.fillRect(x0,y1,barW,y0-y1);}if(bk.f>0){var y2=yVal(bk.f);ctx.fillStyle='#f44336';ctx.fillRect(x0+barW+4,y2,barW,y0-y2);}});ctx.fillStyle='#555';ctx.font='11px Arial';ctx.textAlign='right';ctx.textBaseline='middle';for(yi=0;yi<=yTicks;yi++){var yv=Math.round((yTicks-yi)*(maxY/yTicks));var yy2=padT+(yi/yTicks)*ph;ctx.fillText(String(yv),padL-4,yy2);}ctx.fillStyle='#444';ctx.font='9px Arial';ctx.textAlign='right';ctx.textBaseline='top';for(xi=0;xi<n;xi+=xStep){var lbl=fmtHms(buckets[xi].t);var xx2=xCenter(xi);ctx.save();ctx.translate(xx2,padT+ph+4);ctx.rotate(-Math.PI/5);ctx.fillText(lbl,0,0);ctx.restore();}var tPass=buckets.reduce(function(a,bk){return a+bk.p;},0),tFail=buckets.reduce(function(a,bk){return a+bk.f;},0);var el=document.getElementById('trend-meta');if(el)el.textContent=tPass+' pass · '+tFail+' fail in window · '+n+' × 5s bucket(s)'+(running?' · refresh 5s':'');}catch(err){var em=document.getElementById('trend-meta');if(em)em.textContent='Trend chart could not render: '+(err&&err.message?err.message:String(err));}}");
+        html.append("function initConsolidatedFailuresToggle(){var head=document.getElementById('cons-fail-head');var caret=document.getElementById('cons-fail-caret');var body=document.getElementById('cons-fail-body');if(!head||!caret||!body)return;var collapsed=false;function apply(){body.style.display=collapsed?'none':'block';caret.classList.toggle('collapsed',collapsed);}function toggle(){collapsed=!collapsed;apply();}head.addEventListener('click',toggle);head.addEventListener('keydown',function(ev){if(ev.key==='Enter'||ev.key===' '){ev.preventDefault();toggle();}});apply();}");
+        html.append("async function loadConsolidatedFailures(){var el=document.getElementById('cons-fail-body');if(!el)return;var ts='?ts='+Date.now();var paths=['../../consolidated-failure-reasons.json'+ts,'../consolidated-failure-reasons.json'+ts,'./../../consolidated-failure-reasons.json'+ts];for(var i=0;i<paths.length;i++){try{var r=await fetch(paths[i],{cache:'no-store'});if(!r.ok)continue;var d=await r.json();renderConsolidatedFailures(d);return;}catch(e){}}el.innerHTML='<p class=\"failure-reason-empty\">No consolidated data found.</p>';}");
+        html.append("function renderConsolidatedFailures(d){var el=document.getElementById('cons-fail-body');if(!el)return;var arr=(d&&d.failureReasons)||[];if(!arr.length){el.innerHTML='<p class=\"failure-reason-empty\">No failures in latest runs.</p>';return;}var h='';arr.forEach(function(gr,idx){var reason=String(gr.reason||'');var cnt=+gr.count||0;var cases=(gr.testcases)||[];var gid='cons-f-'+idx;h+='<div class=\"cons-fail-group\"><div class=\"cons-fail-row\"><div class=\"cons-fail-text\">'+e(reason)+'</div><div class=\"cons-fail-count\">'+cnt+'</div></div>';h+='<span class=\"cons-fail-toggle\" data-g=\"'+gid+'\">Expand / Collapse</span>';h+='<div class=\"cons-fail-list\" id=\"'+gid+'\">';cases.forEach(function(ca){h+='<div class=\"cons-fail-case\">'+e(ca.testcaseName||'')+'</div>';});h+='</div></div>';});el.innerHTML=h;el.querySelectorAll('.cons-fail-toggle[data-g]').forEach(function(tg){tg.addEventListener('click',function(){var id=tg.getAttribute('data-g');var box=document.getElementById(id);if(!box)return;box.classList.toggle('open');});});}");
+        html.append("function renderFailureReasons(testCases){var panel=document.getElementById('failure-reasons-panel');if(!panel)return;var groups={};(testCases||[]).forEach(function(t,i){if(String(t.status||'').toUpperCase()!=='FAILED')return;var r=String(t.failureReason||'').trim();if(!r)r='(No failure message)';var firstShot='';var steps=t.testSteps||[];for(var si=0;si<steps.length&&!firstShot;si++){var ss=(steps[si]&&steps[si].screenshots)||[];if(ss.length)firstShot=String(ss[0]||'');}if(!groups[r])groups[r]=[];groups[r].push({id:'tc-'+i,name:String(t.testcaseName||('Test case '+(i+1))),shot:firstShot});});var keys=Object.keys(groups).sort(function(a,b){return groups[b].length-groups[a].length;});var h='<h3>Failure reasons</h3>';if(!keys.length){h+='<p class=\"failure-reason-empty\">No failures yet.</p>';}else{keys.forEach(function(k){var arr=groups[k]||[];h+='<div class=\"failure-reason-group\"><div class=\"failure-reason-row\"><span class=\"failure-reason-text\">'+e(k)+'</span><span class=\"failure-reason-count\">'+arr.length+'</span></div><div class=\"failure-related-cases\">';arr.forEach(function(ca){h+='<div class=\"failure-case-item\"><button type=\"button\" class=\"failure-case-link\" data-case-id=\"'+e(ca.id)+'\">'+e(ca.name)+'</button>';if(ca.shot){var sp=('../'+String(ca.shot)).replace(/\\\\/g,'/');h+='<img class=\"failure-case-thumb\" src=\"'+e(sp)+'\" alt=\"Screenshot\" onclick=\"window.open(this.src,\\'_blank\\')\">';}h+='</div>';});h+='</div></div>';});}\n");
+        html.append("h+='<div class=\"cons-fail-panel\"><div class=\"cons-fail-head\" id=\"cons-fail-head\" role=\"button\" tabindex=\"0\"><div class=\"cons-fail-title\">Consolidated failure reasons (latest)</div><div class=\"cons-fail-caret\" id=\"cons-fail-caret\" aria-hidden=\"true\">&#9660;</div></div><div class=\"cons-fail-body\" id=\"cons-fail-body\"><p class=\"failure-reason-empty\">Loading…</p></div></div>';panel.innerHTML=h;panel.querySelectorAll('.failure-case-link[data-case-id]').forEach(function(btn){btn.addEventListener('click',function(){var cid=btn.getAttribute('data-case-id');if(!cid)return;selectedId=cid;renderSelectedCase((latestData&&latestData.testSuite&&latestData.testSuite.testCases)||[]);renderSidebar((latestData&&latestData.testSuite&&latestData.testSuite.testCases)||[]);setTimeout(scrollToTestcasePanel,0);});});initConsolidatedFailuresToggle();loadConsolidatedFailures();}");
 html.append("function renderSidebar(testCases){var h='';testCases.forEach(function(t,i){var id='tc-'+i;var cls=statusClass(t.status);var tg=statusTag(t.status);h+='<div class=\"sidebar-item '+cls+(selectedId===id?' active':'')+'\" data-id=\"'+id+'\" data-status=\"'+cls+'\"><div class=\"sidebar-item-top\"><div class=\"sidebar-item-name\">'+e(t.testcaseName||'N/A')+'</div><span class=\"sidebar-status-tag '+tg.cls+'\">'+tg.txt+'</span></div></div>';});document.getElementById('sidebar-list').innerHTML=h;bindSidebarEvents();applySidebarFilters();}");
-        html.append("function renderSelectedCase(testCases){if(!testCases.length){document.getElementById('testcase-content').innerHTML='<p>No runtime data yet.</p>';return;}if(!selectedId||!document.querySelector('[data-id=\"'+selectedId+'\"]')){selectedId='tc-0';}var idx=parseInt(selectedId.replace('tc-',''),10);var t=testCases[idx]||testCases[0];var cls=statusClass(t.status);var statusText=String(t.status||'IN_PROGRESS').replace(/_/g,' ');var st=parseTs(t.startTime),et=parseTs(t.endTime),dur='0m:0s:0ms';if(st&&et&&et.getTime()>=st.getTime()){var ms=et.getTime()-st.getTime();var min=Math.floor(ms/60000),sec=Math.floor((ms%60000)/1000),msec=ms%1000;dur=min+'m:'+sec+'s:'+msec+'ms';}var tags=(t.tags&&t.tags.length)?t.tags.join(', '):'N/A';var machine=t.executionMachine||'N/A';var h='<div class=\"test-case '+cls+'\">';h+='<div class=\"testcase-heading\"><h3 class=\"testcase-title\">'+e(t.testcaseName||'N/A')+'</h3><span class=\"testcase-status-chip '+cls+'\">'+e(statusText)+'</span></div>';h+='<div class=\"testcase-meta-grid\">';h+='<div class=\"testcase-meta-item\"><span class=\"testcase-meta-label\">Status</span><span class=\"testcase-meta-value\">'+e(statusText)+'</span></div>';h+='<div class=\"testcase-meta-item\"><span class=\"testcase-meta-label\">Total time taken</span><span class=\"testcase-meta-value\">'+e(dur)+'</span></div>';h+='<div class=\"testcase-meta-item\"><span class=\"testcase-meta-label\">Executed on machine</span><span class=\"testcase-meta-value\">'+e(machine)+'</span></div>';h+='</div>';if(t.tags&&t.tags.length){h+='<div><strong>Tags:</strong></div>';h+='<div class=\"testcase-tags\">';t.tags.forEach(function(tag){h+='<span class=\"testcase-tag\">'+e(tag)+'</span>';});h+='</div>';}if(t.failureReason){h+='<div class=\"error\"><strong>Error:</strong> '+e(t.failureReason)+'</div>';}var steps=t.testSteps||[];var caseSt=parseTs(t.startTime);var prevEnd=null;if(steps.length){h+='<h4>Test Steps:</h4>';steps.forEach(function(st,si){var priorFail=hasPriorFailedStep(steps,si);var su=priorFail?{p:'SKIP',k:'skipped'}:stepRowUi(st);var sc=su.k;var pillTxt=su.p;var end=parseTs(st.endTime);var deltaMs=null;if(!priorFail){if(end){if(si===0&&caseSt){deltaMs=end.getTime()-caseSt.getTime();}else if(prevEnd){deltaMs=end.getTime()-prevEnd.getTime();}prevEnd=end;}else if(sc==='in_progress'){var nowMs=Date.now();if(si===0&&caseSt){deltaMs=nowMs-caseSt.getTime();}else if(prevEnd){deltaMs=nowMs-prevEnd.getTime();}else if(caseSt){deltaMs=nowMs-caseSt.getTime();}}}var timeLbl=fmtStepDelta(deltaMs);h+='<div class=\"test-step '+sc+'\"><div class=\"test-step-hd\"><p class=\"test-step-title\">'+e(st.teststepName||'Step')+'</p><div class=\"test-step-badges\"><span class=\"step-status-pill '+sc+'\">'+pillTxt+'</span><span class=\"step-delta\">'+timeLbl+'</span></div></div>';if(st.errorMessage){h+='<div class=\"error\">'+e(st.errorMessage)+'</div>';}if(st.screenshots&&st.screenshots.length){h+='<div class=\"screenshots\"><p><strong>Screenshots:</strong></p>';st.screenshots.forEach(function(ss){var p=('../'+String(ss||'')).replace(/\\\\/g,'/');h+='<div class=\"screenshot\"><img src=\"'+e(p)+'\" alt=\"Screenshot\" onclick=\"window.open(this.src,\\'_blank\\')\"><p style=\"font-size:.85em;color:#666;\">'+e(ss)+'</p></div>';});h+='</div>';}h+='</div>';});}h+='</div>';document.getElementById('testcase-content').innerHTML=h;}");
+        html.append("function stepTypeClass(st){var t=String((st&&st.stepType)||'').toUpperCase();if(t.indexOf('DATA')>=0)return{txt:'DATA',cls:'data'};if(t.indexOf('ASSERT')>=0)return{txt:'ASSERT',cls:'assert'};if(t.indexOf('PREREQ')>=0||t.indexOf('INFO')>=0||t.indexOf('INFORMATION')>=0)return{txt:'INFO',cls:'info'};if(t.indexOf('CONFIG')>=0)return{txt:'CONFIG',cls:'info'};if(t.indexOf('CUSTOM')>=0)return{txt:'CUSTOM',cls:'info'};return null;}");
+        html.append("function addMetaRows(st){var rows='';function row(k,v,showKey){if(v==null)return;var s=String(v);if(!s.trim())return;var keyHtml=(showKey===false)?'':('<div class=\"step-meta-key\">'+e(k)+'</div>');rows+='<div class=\"step-meta-row\">'+keyHtml+'<div class=\"step-meta-val\">'+e(s)+'</div></div>';}\nrow('Expected',st.expected,true);\nrow('Actual',st.actual,true);\nrow('Data',st.testdata,false);\nrow('Info',st.prereq,true);\nreturn rows?('<div class=\"step-meta\">'+rows+'</div>'):'';}");
+        html.append("function renderSelectedCase(testCases){if(!testCases.length){document.getElementById('testcase-content').innerHTML='<p>No runtime data yet.</p>';return;}if(!selectedId||!document.querySelector('[data-id=\"'+selectedId+'\"]')){selectedId='tc-0';}var idx=parseInt(selectedId.replace('tc-',''),10);var t=testCases[idx]||testCases[0];var cls=statusClass(t.status);var statusText=String(t.status||'IN_PROGRESS').replace(/_/g,' ');var st=parseTs(t.startTime),et=parseTs(t.endTime),dur='0m:0s:0ms';if(st&&et&&et.getTime()>=st.getTime()){var ms=et.getTime()-st.getTime();var min=Math.floor(ms/60000),sec=Math.floor((ms%60000)/1000),msec=ms%1000;dur=min+'m:'+sec+'s:'+msec+'ms';}var tags=(t.tags&&t.tags.length)?t.tags.join(', '):'N/A';var machine=t.executionMachine||'N/A';var h='<div class=\"test-case '+cls+'\">';h+='<div class=\"testcase-heading\"><h3 class=\"testcase-title\">'+e(t.testcaseName||'N/A')+'</h3><span class=\"testcase-status-chip '+cls+'\">'+e(statusText)+'</span></div>';h+='<div class=\"testcase-meta-grid\">';h+='<div class=\"testcase-meta-item\"><span class=\"testcase-meta-label\">Status</span><span class=\"testcase-meta-value\">'+e(statusText)+'</span></div>';h+='<div class=\"testcase-meta-item\"><span class=\"testcase-meta-label\">Total time taken</span><span class=\"testcase-meta-value\">'+e(dur)+'</span></div>';h+='<div class=\"testcase-meta-item\"><span class=\"testcase-meta-label\">Executed on machine</span><span class=\"testcase-meta-value\">'+e(machine)+'</span></div>';h+='</div>';if(t.tags&&t.tags.length){h+='<div><strong>Tags:</strong></div>';h+='<div class=\"testcase-tags\">';t.tags.forEach(function(tag){h+='<span class=\"testcase-tag\">'+e(tag)+'</span>';});h+='</div>';}if(t.failureReason){h+='<div class=\"error\"><strong>Error:</strong> '+e(t.failureReason)+'</div>';}var steps=t.testSteps||[];var caseSt=parseTs(t.startTime);var prevEnd=null;if(steps.length){h+='<h4>Test Steps:</h4>';steps.forEach(function(st,si){var priorFail=hasPriorFailedStep(steps,si);var su=priorFail?{p:'SKIP',k:'skipped'}:stepRowUi(st);var sc=su.k;var pillTxt=su.p;var end=parseTs(st.endTime);var deltaMs=null;if(!priorFail){if(end){if(si===0&&caseSt){deltaMs=end.getTime()-caseSt.getTime();}else if(prevEnd){deltaMs=end.getTime()-prevEnd.getTime();}prevEnd=end;}else if(sc==='in_progress'){var nowMs=Date.now();if(si===0&&caseSt){deltaMs=nowMs-caseSt.getTime();}else if(prevEnd){deltaMs=nowMs-prevEnd.getTime();}else if(caseSt){deltaMs=nowMs-caseSt.getTime();}}}var timeLbl=fmtStepDelta(deltaMs);var ty=stepTypeClass(st);h+='<div class=\"test-step '+sc+'\"><div class=\"test-step-hd\"><p class=\"test-step-title\">'+e(st.teststepName||'Step')+'</p><div class=\"test-step-badges\">'+(ty?('<span class=\"step-type-pill '+ty.cls+'\">'+ty.txt+'</span>'):'')+'<span class=\"step-status-pill '+sc+'\">'+pillTxt+'</span><span class=\"step-delta\">'+timeLbl+'</span></div></div>';if(st.errorMessage){h+='<div class=\"error\">'+e(st.errorMessage)+'</div>';}h+=addMetaRows(st);if(st.screenshots&&st.screenshots.length){h+='<div class=\"screenshots\"><p><strong>Screenshots:</strong></p>';st.screenshots.forEach(function(ss){var p=('../'+String(ss||'')).replace(/\\\\/g,'/');h+='<div class=\"screenshot\"><img src=\"'+e(p)+'\" alt=\"Screenshot\" onclick=\"window.open(this.src,\\'_blank\\')\"><p style=\"font-size:.85em;color:#666;\">'+e(ss)+'</p></div>';});h+='</div>';}h+='</div>';});}h+='</div>';document.getElementById('testcase-content').innerHTML=h;}");
         html.append("function applySidebarFilters(){var items=document.querySelectorAll('#sidebar-list .sidebar-item');items.forEach(function(it){var nm=(it.querySelector('.sidebar-item-name')||{}).textContent||'';var st=it.getAttribute('data-status')||'all';var okSearch=nm.toLowerCase().indexOf(currentSearch)>=0;var okFilter=(currentFilter==='all'||st===currentFilter);it.style.display=(okSearch&&okFilter)?'block':'none';});}");
         html.append("function filterByStatus(st){currentFilter=st||'all';document.querySelectorAll('.filter-btn').forEach(function(b){b.classList.toggle('active',(b.getAttribute('data-status')||'')===currentFilter);});applySidebarFilters();}");
         html.append("function filterShowAllTestCases(){filterByStatus('all');return false;}");
@@ -1500,6 +1522,7 @@ html.append("function renderSidebar(testCases){var h='';testCases.forEach(functi
         html.append("function render(d){latestData=d||{};if(!d||!d.testSuite){document.getElementById('live-banner').innerText='No runtime data yet';return;}var s=d.testSuite,tc=s.testCases||[];var p=0,f=0,k=0;tc.forEach(function(t){if(t.status==='PASSED')p++;else if(t.status==='FAILED')f++;else if(t.status==='SKIPPED')k++;});var abortedStale=isStaleAborted(d);var effectiveRun=d.running===true&&!abortedStale;var stLbl=abortedStale?'ABORTED':(d.running?'RUNNING':'COMPLETED');var stExtra=abortedStale?' aborted':'';document.getElementById('suite-title').innerHTML=e(s.title||'Merv Live Runtime Report')+' <span id=\"run-state\" class=\"status-pill'+stExtra+'\">'+stLbl+'</span>';if(abortedStale){document.getElementById('live-banner').innerText='Aborted — no report updates for 1 min (build may have stopped). Test cases: '+tc.length;}else if(d.running){document.getElementById('live-banner').innerText='Live · Last update: '+new Date().toLocaleString()+' | Test cases: '+tc.length;}else{document.getElementById('live-banner').innerText='Execution completed. '+((d.exportDate)?('Snapshot: '+d.exportDate+'. '):'')+'Test cases: '+tc.length;}document.getElementById('total-count').innerText=tc.length;document.getElementById('passed-count').innerText=p;document.getElementById('failed-count').innerText=f;document.getElementById('skipped-count').innerText=k;document.getElementById('leg-p').textContent='Passed ('+p+')';document.getElementById('leg-f').textContent='Failed ('+f+')';document.getElementById('leg-k').textContent='Skipped ('+k+')';drawPieChart(p,f,k);drawTrendChart(tc,s,effectiveRun);renderFailureReasons(tc);if(requestedTestcaseName&&!appliedRequestedCase){for(var qi=0;qi<tc.length;qi++){var nm=String((tc[qi]&&tc[qi].testcaseName)||'').trim().toLowerCase();if(nm===requestedTestcaseName){selectedId='tc-'+qi;appliedRequestedCase=true;break;}}}renderSidebar(tc);renderSelectedCase(tc);if(!effectiveRun){stopPolling();}}");
         html.append("async function load(){var ts='?ts='+Date.now();var paths=['../json/merv-report.json'+ts,'./../json/merv-report.json'+ts,'../../json/merv-report.json'+ts,'./merv-report.json'+ts];var lastErr='';for(var i=0;i<paths.length;i++){try{var r=await fetch(paths[i],{cache:'no-store'});if(!r.ok){lastErr='HTTP '+r.status+' for '+paths[i];continue;}var d=await r.json();render(d);return;}catch(err){lastErr=(err&&err.message)?err.message:String(err);}}var lb=document.getElementById('live-banner');if(lb&&lastErr){lb.innerText='Live data load issue: '+lastErr;}}");
         html.append("pollTimer=setInterval(load,5000);load();");
+        html.append("(function(){var cb=document.getElementById('toggle-shots');if(!cb)return;var key='merv.showScreenshots';function apply(v){document.body.classList.toggle('hide-shots',!v);}var saved=null;try{saved=localStorage.getItem(key);}catch(e){}if(saved==='0'){cb.checked=false;}apply(cb.checked);cb.addEventListener('change',function(){apply(cb.checked);try{localStorage.setItem(key,cb.checked?'1':'0');}catch(e){}});})();");
         html.append("</script></body></html>");
         return html.toString();
     }
@@ -1588,6 +1611,7 @@ html.append("function renderSidebar(testCases){var h='';testCases.forEach(functi
                 return;
             }
             MervReportsIndexHtmlWriter.write(base.trim());
+            MervConsolidatedFailureReasonsWriter.write(base.trim());
         } catch (Exception e) {
             System.err.println("Could not update reports index: " + e.getMessage());
         }

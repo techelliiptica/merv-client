@@ -1,3 +1,4 @@
+/Users/vaibhavsingh/Desktop/teche-apps/merv/merv-client/src/main/java/org/teche/merv/client/plugin/MervPluginSteps.java
 /Users/vaibhavsingh/Desktop/teche-apps/merv/merv-client/src/main/java/org/teche/merv/client/utils/ReportsDeleteServer.java
 /Users/vaibhavsingh/Desktop/teche-apps/merv/merv-client/src/main/java/org/teche/merv/client/logging/LogLevel.java
 /Users/vaibhavsingh/Desktop/teche-apps/merv/merv-client/src/main/java/org/teche/merv/client/dto/TestStepResponse.java
@@ -38,3 +39,4 @@
 /Users/vaibhavsingh/Desktop/teche-apps/merv/merv-client/src/main/java/org/teche/merv/client/example/MervClientExample.java
 /Users/vaibhavsingh/Desktop/teche-apps/merv/merv-client/src/main/java/org/teche/merv/client/plugin/MervCucumberHandler.java
 /Users/vaibhavsingh/Desktop/teche-apps/merv/merv-client/src/main/java/org/teche/merv/client/utils/TestStepBuilder.java
+/Users/vaibhavsingh/Desktop/teche-apps/merv/merv-client/src/main/java/org/teche/merv/client/report/html/MervConsolidatedFailureReasonsWriter.java
