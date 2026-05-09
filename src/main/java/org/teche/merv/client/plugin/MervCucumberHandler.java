@@ -757,58 +757,8 @@ public class MervCucumberHandler implements ConcurrentEventListener {
         return client.uploadFile(stepId, inputStream, filename, description);
     }
 
-    /**
-     * Static method to add a test step with a specific step type
-     * This method can be called from external classes without exposing MervClient
-     *
-     * @param stepName The name/description of the test step
-     * @param stepType The type of step (testdata, assertion, information)
-     * @param expected Optional expected result
-     * @param actual Optional actual result
-     * @param testdata Optional test data
-     * @param prereq Optional prerequisites
-     * @return TestStepResponse with the created test step details
-     * @throws MervClientException if step creation fails or no active test case/client is available
-     */
-    public static org.teche.merv.client.dto.TestStepResponse addStep(
-            String stepName,
-            String stepType,
-            String expected,
-            String actual,
-            String testdata,
-            String prereq) throws MervClientException {
-        // In local mode we enqueue into the local JSON; in server mode we create API step.
-        return MervPluginSteps.addStep(stepName, stepType, expected, actual, testdata, prereq);
-    }
-
-    /**
-     * Static method to add a test step with minimal parameters (overloaded convenience method)
-     *
-     * @param stepName The name/description of the test step
-     * @param stepType The type of step (testdata, assertion, information)
-     * @return TestStepResponse with the created test step details
-     * @throws MervClientException if step creation fails or no active test case/client is available
-     */
-    public static org.teche.merv.client.dto.TestStepResponse addStep(String stepName, String stepType) throws MervClientException {
-        return addStep(stepName, stepType, null, null, null, null);
-    }
-
-    /**
-     * Static method to add a test data step with string data
-     * Convenience method for creating TEST_DATA type steps with string test data
-     *
-     * @param stepName The name/description of the test step
-     * @param testdata The test data content as string
-     * @return TestStepResponse with the created test step details
-     * @throws MervClientException if step creation fails or no active test case/client is available
-     */
-    public static org.teche.merv.client.dto.TestStepResponse addDataStep(
-            String stepName,
-            String testdata
-    ) throws MervClientException {
-
-        return addStep(stepName, StepType.TESTDATA.getApiValue(), null, null, testdata, null);
-    }
+    // NOTE: Step helper methods intentionally live in MervReporter / MervPluginSteps.
+    // This handler only binds execution context.
     /**
      * Static method to add a test data step with file as data
      * Convenience method for creating TEST_DATA type steps with file attachment
@@ -821,7 +771,7 @@ public class MervCucumberHandler implements ConcurrentEventListener {
      * @return TestStepResponse with the created test step details
      * @throws MervClientException if step creation fails or no active test case/client is available
      */
-    public static org.teche.merv.client.dto.TestStepResponse addDataStep(
+    static org.teche.merv.client.dto.TestStepResponse addDataStep(
             String stepName,
             File file,
             org.teche.merv.client.dto.FileType fileType,
@@ -909,45 +859,7 @@ public class MervCucumberHandler implements ConcurrentEventListener {
      * @return TestStepResponse with the created test step details
      * @throws MervClientException if step creation fails or no active test case/client is available
      */
-    public static org.teche.merv.client.dto.TestStepResponse addValidationStep(
-            String stepName,
-            String expected,
-            String actual,
-            String testdata,
-            String prereq) throws MervClientException {
-        return addStep(stepName, StepType.ASSERTION.getApiValue() , expected, actual, testdata, prereq);
-    }
-
-    public static org.teche.merv.client.dto.TestStepResponse addValidationStep(
-            String stepName,
-            String expected,
-            String actual) throws MervClientException {
-        return addValidationStep(stepName, expected, actual, null, null);
-    }
-
-    /**
-     * Static method to add a validation/assertion step with minimal parameters
-     *
-     * @param stepName The name/description of the test step
-     * @return TestStepResponse with the created test step details
-     * @throws MervClientException if step creation fails or no active test case/client is available
-     */
-    public static org.teche.merv.client.dto.TestStepResponse addValidationStep(String stepName) throws MervClientException {
-        return addValidationStep(stepName, null, null, null, null);
-    }
-
-    /**
-     * Static method to add a prerequisite step
-     * Convenience method for creating PREREQUISITE type steps
-     *
-     * @param stepName The name/description of the test step
-     * @param prereq Optional prerequisites
-     * @return TestStepResponse with the created test step details
-     * @throws MervClientException if step creation fails or no active test case/client is available
-     */
-    public static org.teche.merv.client.dto.TestStepResponse info(String infoToAdd) throws MervClientException {
-        return addStep("Info", StepType.INFORMATION.getValue(), null, null, null, infoToAdd);
-    }
+    // NOTE: Validation/info helpers are provided by MervReporter / MervPluginSteps.
 
     /**
      * Get the active test case ID from ThreadLocal (for internal use)
@@ -963,7 +875,7 @@ public class MervCucumberHandler implements ConcurrentEventListener {
      * When the step finishes, if viewInReport is true, the step status will be set to SKIPPED.
      * If viewInReport is false, the step will be deleted from the server.
      */
-    public static void skipStep() {
+    static void skipStep() {
         skipStep(true);
     }
 
@@ -974,7 +886,7 @@ public class MervCucumberHandler implements ConcurrentEventListener {
      * @param viewInReport If true, the step will be kept with SKIPPED status (visible in report, won't affect test case status)
      *                     If false, the step will be deleted from the server (not visible in report)
      */
-    public static void skipStep(boolean viewInReport) {
+    static void skipStep(boolean viewInReport) {
         threadLocalSkipNextStep.set(true);
         threadLocalSkipStepViewInReport.set(viewInReport);
     }

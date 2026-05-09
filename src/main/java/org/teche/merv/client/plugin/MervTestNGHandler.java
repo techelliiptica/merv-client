@@ -152,11 +152,13 @@ public class MervTestNGHandler implements IExecutionListener, ITestListener, IIn
                 step.setStepType(payload.type.getApiValue());
                 step.setStatus(payload.status);
                 step.setStartTime(new Date());
+                step.setEndTime(new Date());
                 step.setExpected(payload.expected);
                 step.setActual(payload.actual);
                 step.setTestdata(payload.testdata);
                 step.setPrereq(payload.prereq);
                 step.setErrorMessage(payload.errorMessage);
+                tryCaptureAutomationScreenshotLocal(step);
                 localCase.getTestSteps().add(step);
                 if ("FAILED".equalsIgnoreCase(payload.status)) {
                     localCase.setStatus("FAILED");
@@ -200,47 +202,8 @@ public class MervTestNGHandler implements IExecutionListener, ITestListener, IIn
         });
     }
 
-    // ---- Shared step APIs (same as MervCucumberHandler via MervPluginSteps) ----
-    public static TestStepResponse addStep(
-            String stepName,
-            String stepType,
-            String expected,
-            String actual,
-            String testdata,
-            String prereq) throws MervClientException {
-        TestStepResponse res = MervPluginSteps.addStep(stepName, stepType, expected, actual, testdata, prereq);
-        // In TestNG local mode we don't throw; step is queued/attached to local report.
-        return res;
-    }
-
-    public static TestStepResponse addStep(String stepName, String stepType) throws MervClientException {
-        return addStep(stepName, stepType, null, null, null, null);
-    }
-
-    public static TestStepResponse addDataStep(String stepName, String testdata) throws MervClientException {
-        return MervPluginSteps.addDataStep(stepName, testdata);
-    }
-
-    public static TestStepResponse addValidationStep(
-            String stepName,
-            String expected,
-            String actual,
-            String testdata,
-            String prereq) throws MervClientException {
-        return MervPluginSteps.addValidationStep(stepName, expected, actual, testdata, prereq);
-    }
-
-    public static TestStepResponse addValidationStep(String stepName, String expected, String actual) throws MervClientException {
-        return MervPluginSteps.addValidationStep(stepName, expected, actual);
-    }
-
-    public static TestStepResponse addValidationStep(String stepName) throws MervClientException {
-        return MervPluginSteps.addValidationStep(stepName);
-    }
-
-    public static TestStepResponse info(String infoToAdd) throws MervClientException {
-        return MervPluginSteps.info(infoToAdd);
-    }
+    // NOTE: Step helper methods intentionally live in MervReporter / MervPluginSteps.
+    // This handler only binds execution context.
 
     @Override
     public void onExecutionStart() {

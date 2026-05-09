@@ -8,6 +8,7 @@ org/teche/merv/client/auth/AuthManager$LoginResponse.class
 org/teche/merv/client/plugin/MervPluginSteps$Adapter.class
 org/teche/merv/client/report/html/MervReportsIndexHtmlWriter.class
 org/teche/merv/client/utils/ReportsDeleteServer.class
+org/teche/merv/client/plugin/MervAssertions.class
 org/teche/merv/client/dto/FileAttachmentResponse.class
 org/teche/merv/client/dto/TestStepRequest.class
 org/teche/merv/client/plugin/MervTestNGHandler$1.class
@@ -20,6 +21,9 @@ org/teche/merv/client/logging/LogLevel.class
 org/teche/merv/client/dto/TestCaseStatusDeserializer.class
 org/teche/merv/client/dto/TestCaseStatus.class
 org/teche/merv/client/MervClient$TestCaseStatusUpdateRequest.class
+org/teche/merv/client/plugin/MervJUnitHandler.class
+org/teche/merv/client/plugin/Assert.class
+org/teche/merv/client/plugin/MervReporter$DefaultMervReporterApi.class
 org/teche/merv/client/dto/FileType.class
 org/teche/merv/client/dto/TestSuitePatchRequest.class
 org/teche/merv/client/utils/TestStepBuilder.class
@@ -36,11 +40,14 @@ org/teche/merv/client/logging/LoggingExample.class
 org/teche/merv/client/plugin/MervCucumberHandler$LocalTestStep.class
 org/teche/merv/client/report/html/MervConsolidatedFailureReasonsWriter$1.class
 org/teche/merv/client/plugin/MervTestNGHandler$LocalTestSuite.class
+org/teche/merv/client/plugin/MervJUnitHandler$LocalTestCase.class
+org/teche/merv/client/plugin/MervJUnitHandler$LocalTestSuite.class
 org/teche/merv/client/plugin/MervCucumberHandler$1.class
 org/teche/merv/client/report/html/MervConsolidatedFailureReasonsWriter$LatestCase.class
 org/teche/merv/client/report/html/MervReportsIndexHtmlWriter$ReportIndexEntry.class
 org/teche/merv/client/auth/AuthManager$RefreshTokenRequest.class
 org/teche/merv/client/report/html/MervConsolidatedFailureReasonsWriter.class
+org/teche/merv/client/plugin/MervReporterApi.class
 org/teche/merv/client/plugin/AutomationScreenshotCapturer.class
 org/teche/merv/client/report/html/MervReportBranding.class
 org/teche/merv/client/auth/AuthManager$LoginRequest.class
@@ -59,5 +66,8 @@ org/teche/merv/client/logging/MervLoggerFactory.class
 org/teche/merv/client/dto/TestSuiteRequest.class
 org/teche/merv/client/utils/TestSuiteBuilder.class
 org/teche/merv/client/plugin/AutomationTool.class
+org/teche/merv/client/plugin/MervReporter.class
+org/teche/merv/client/plugin/MervJUnitHandler$LocalTestStep.class
+org/teche/merv/client/plugin/MervJUnitHandler$1.class
 org/teche/merv/client/logging/MervLoggerImpl$1.class
 org/teche/merv/client/report/html/MervReportsIndexHtmlWriter$ReportSummary.class
