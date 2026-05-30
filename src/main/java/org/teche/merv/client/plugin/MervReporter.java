@@ -10,6 +10,8 @@ import java.io.File;
  *
  * <p>Use this in test code instead of handler-specific static methods
  * ({@code MervCucumberHandler.addStep(...)} / {@code MervTestNGHandler.addStep(...)} / etc.).</p>
+ *
+ * <p>Preferred helpers: {@link #data}, {@link #validation}, {@link #info}.</p>
  */
 public final class MervReporter {
 
@@ -35,37 +37,76 @@ public final class MervReporter {
         return DEFAULT.addStep(stepName, stepType);
     }
 
-    public static TestStepResponse addDataStep(String stepName, String testdata) {
-        return DEFAULT.addDataStep(stepName, testdata);
+    public static TestStepResponse data(String stepName, String testdata) {
+        return DEFAULT.data(stepName, testdata);
     }
 
+    public static TestStepResponse data(
+            String stepName,
+            File file,
+            org.teche.merv.client.dto.FileType fileType,
+            String prereq) {
+        return DEFAULT.data(stepName, file, fileType, prereq);
+    }
+
+    public static TestStepResponse validation(
+            String stepName,
+            String expected,
+            String actual,
+            String testdata,
+            String prereq) {
+        return DEFAULT.validation(stepName, expected, actual, testdata, prereq);
+    }
+
+    public static TestStepResponse validation(String stepName, String expected, String actual) {
+        return DEFAULT.validation(stepName, expected, actual);
+    }
+
+    public static TestStepResponse validation(String stepName) {
+        return DEFAULT.validation(stepName);
+    }
+
+    public static TestStepResponse info(String infoToAdd) {
+        return DEFAULT.info(infoToAdd);
+    }
+
+    /** @deprecated Use {@link #data(String, String)}. */
+    @Deprecated
+    public static TestStepResponse addDataStep(String stepName, String testdata) {
+        return data(stepName, testdata);
+    }
+
+    /** @deprecated Use {@link #data(String, File, org.teche.merv.client.dto.FileType, String)}. */
+    @Deprecated
     public static TestStepResponse addDataStep(
             String stepName,
             File file,
             org.teche.merv.client.dto.FileType fileType,
             String prereq) {
-        return DEFAULT.addDataStep(stepName, file, fileType, prereq);
+        return data(stepName, file, fileType, prereq);
     }
 
+    /** @deprecated Use {@link #validation(String, String, String, String, String)}. */
+    @Deprecated
     public static TestStepResponse addValidationStep(
             String stepName,
             String expected,
             String actual,
             String testdata,
             String prereq) {
-        return DEFAULT.addValidationStep(stepName, expected, actual, testdata, prereq);
+        return validation(stepName, expected, actual, testdata, prereq);
     }
 
+    /** @deprecated Use {@link #validation(String, String, String)}. */
+    @Deprecated
     public static TestStepResponse addValidationStep(String stepName, String expected, String actual) {
-        return DEFAULT.addValidationStep(stepName, expected, actual);
+        return validation(stepName, expected, actual);
     }
 
+    /** @deprecated Use {@link #validation(String)}. */
+    @Deprecated
     public static TestStepResponse addValidationStep(String stepName) {
-        return DEFAULT.addValidationStep(stepName);
-    }
-
-    public static TestStepResponse info(String infoToAdd) {
-        return DEFAULT.info(infoToAdd);
+        return validation(stepName);
     }
 
     public static void skipStep() {
@@ -99,54 +140,53 @@ public final class MervReporter {
         }
 
         @Override
-        public TestStepResponse addDataStep(String stepName, String testdata) {
+        public TestStepResponse data(String stepName, String testdata) {
             try {
-                return MervPluginSteps.addDataStep(stepName, testdata);
+                return MervPluginSteps.data(stepName, testdata);
             } catch (MervClientException e) {
-                System.err.println("[MervReporter] addDataStep failed: " + e.getMessage());
+                System.err.println("[MervReporter] data failed: " + e.getMessage());
                 return null;
             }
         }
 
         @Override
-        public TestStepResponse addDataStep(String stepName, File file, org.teche.merv.client.dto.FileType fileType, String prereq)
+        public TestStepResponse data(String stepName, File file, org.teche.merv.client.dto.FileType fileType, String prereq)
         {
             try {
-                // Delegate to the existing implementation that supports file uploads in server mode.
-                return MervCucumberHandler.addDataStep(stepName, file, fileType, prereq);
+                return MervCucumberHandler.data(stepName, file, fileType, prereq);
             } catch (MervClientException e) {
-                System.err.println("[MervReporter] addDataStep(file) failed: " + e.getMessage());
+                System.err.println("[MervReporter] data(file) failed: " + e.getMessage());
                 return null;
             }
         }
 
         @Override
-        public TestStepResponse addValidationStep(String stepName, String expected, String actual, String testdata, String prereq)
+        public TestStepResponse validation(String stepName, String expected, String actual, String testdata, String prereq)
         {
             try {
-                return MervPluginSteps.addValidationStep(stepName, expected, actual, testdata, prereq);
+                return MervPluginSteps.validation(stepName, expected, actual, testdata, prereq);
             } catch (MervClientException e) {
-                System.err.println("[MervReporter] addValidationStep failed: " + e.getMessage());
+                System.err.println("[MervReporter] validation failed: " + e.getMessage());
                 return null;
             }
         }
 
         @Override
-        public TestStepResponse addValidationStep(String stepName, String expected, String actual) {
+        public TestStepResponse validation(String stepName, String expected, String actual) {
             try {
-                return MervPluginSteps.addValidationStep(stepName, expected, actual);
+                return MervPluginSteps.validation(stepName, expected, actual);
             } catch (MervClientException e) {
-                System.err.println("[MervReporter] addValidationStep failed: " + e.getMessage());
+                System.err.println("[MervReporter] validation failed: " + e.getMessage());
                 return null;
             }
         }
 
         @Override
-        public TestStepResponse addValidationStep(String stepName) {
+        public TestStepResponse validation(String stepName) {
             try {
-                return MervPluginSteps.addValidationStep(stepName);
+                return MervPluginSteps.validation(stepName);
             } catch (MervClientException e) {
-                System.err.println("[MervReporter] addValidationStep failed: " + e.getMessage());
+                System.err.println("[MervReporter] validation failed: " + e.getMessage());
                 return null;
             }
         }
@@ -172,4 +212,3 @@ public final class MervReporter {
         }
     }
 }
-

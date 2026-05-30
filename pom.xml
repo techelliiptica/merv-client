@@ -7,7 +7,7 @@
 
     <groupId>io.github.techelliiptica</groupId>
     <artifactId>merv-client-api</artifactId>
-    <version>3.0.1</version>
+    <version>3.0.3</version>
     <packaging>jar</packaging>
 
     <name>MERV Client API</name>

@@ -61,11 +61,13 @@ public final class MervPluginSteps {
         return addStep(stepName, stepType, null, null, null, null);
     }
 
-    public static TestStepResponse addDataStep(String stepName, String testdata) throws MervClientException {
+    /** TEST_DATA row (same as JS {@code MervPlaywrightHandler.data}). */
+    public static TestStepResponse data(String stepName, String testdata) throws MervClientException {
         return addStep(stepName, StepType.TESTDATA.getValue(), null, null, testdata, null);
     }
 
-    public static TestStepResponse addValidationStep(
+    /** ASSERTION row (same as JS {@code MervPlaywrightHandler.validation}). */
+    public static TestStepResponse validation(
             String stepName,
             String expected,
             String actual,
@@ -74,16 +76,46 @@ public final class MervPluginSteps {
         return addStep(stepName, StepType.ASSERTION.getValue(), expected, actual, testdata, prereq);
     }
 
-    public static TestStepResponse addValidationStep(String stepName, String expected, String actual) throws MervClientException {
-        return addValidationStep(stepName, expected, actual, null, null);
+    public static TestStepResponse validation(String stepName, String expected, String actual) throws MervClientException {
+        return validation(stepName, expected, actual, null, null);
     }
 
-    public static TestStepResponse addValidationStep(String stepName) throws MervClientException {
-        return addValidationStep(stepName, null, null, null, null);
+    public static TestStepResponse validation(String stepName) throws MervClientException {
+        return validation(stepName, null, null, null, null);
     }
 
+    /** INFORMATION / prerequisite row (same as JS {@code MervPlaywrightHandler.info}). */
     public static TestStepResponse info(String infoToAdd) throws MervClientException {
         return addStep("Info", StepType.INFORMATION.getValue(), null, null, null, infoToAdd);
+    }
+
+    /** @deprecated Use {@link #data(String, String)}. */
+    @Deprecated
+    public static TestStepResponse addDataStep(String stepName, String testdata) throws MervClientException {
+        return data(stepName, testdata);
+    }
+
+    /** @deprecated Use {@link #validation(String, String, String, String, String)}. */
+    @Deprecated
+    public static TestStepResponse addValidationStep(
+            String stepName,
+            String expected,
+            String actual,
+            String testdata,
+            String prereq) throws MervClientException {
+        return validation(stepName, expected, actual, testdata, prereq);
+    }
+
+    /** @deprecated Use {@link #validation(String, String, String)}. */
+    @Deprecated
+    public static TestStepResponse addValidationStep(String stepName, String expected, String actual) throws MervClientException {
+        return validation(stepName, expected, actual);
+    }
+
+    /** @deprecated Use {@link #validation(String)}. */
+    @Deprecated
+    public static TestStepResponse addValidationStep(String stepName) throws MervClientException {
+        return validation(stepName);
     }
 
     interface Adapter {

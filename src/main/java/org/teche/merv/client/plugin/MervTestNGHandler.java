@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import org.teche.merv.client.MervClient;
 import org.teche.merv.client.config.MervConfig;
+import org.teche.merv.client.dto.StepType;
 import org.teche.merv.client.dto.TestCaseRequest;
 import org.teche.merv.client.dto.TestCaseResponse;
 import org.teche.merv.client.dto.TestCaseStatus;
@@ -16,6 +17,7 @@ import org.teche.merv.client.dto.TestSuiteResponse;
 import org.teche.merv.client.exception.MervClientException;
 import org.teche.merv.client.report.html.MervReportBranding;
 import org.teche.merv.client.report.html.MervConsolidatedFailureReasonsWriter;
+import org.teche.merv.client.report.html.MervFailureTestJsonWriter;
 import org.teche.merv.client.report.html.MervReportsIndexHtmlWriter;
 import org.teche.merv.client.utils.FileUtils;
 import org.testng.IExecutionListener;
@@ -53,6 +55,9 @@ import java.util.concurrent.ConcurrentMap;
 public class MervTestNGHandler implements IExecutionListener, ITestListener, IInvokedMethodListener {
     private static final String ATTR_CASE_ID = "merv.case.id";
     private static final String ATTR_STEP_ID = "merv.step.id";
+    private static final String ATTR_SERVER_CASE_FINALIZED = "merv.server.case.finalized";
+    /** Stable key for the @Test method (not @Before/@After configuration methods). */
+    private static final String ATTR_RESULT_KEY = "merv.result.key";
 
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper()
             .enable(SerializationFeature.INDENT_OUTPUT)
@@ -105,6 +110,7 @@ public class MervTestNGHandler implements IExecutionListener, ITestListener, IIn
     private final ConcurrentMap<String, UUID> serverStepByMethodKey = new ConcurrentHashMap<>();
     private final ConcurrentMap<UUID, Boolean> localCaseHasCustomFailure = new ConcurrentHashMap<>();
     private final ConcurrentMap<UUID, Boolean> serverCaseHasCustomFailure = new ConcurrentHashMap<>();
+    private final ConcurrentMap<UUID, Boolean> serverCaseFinalized = new ConcurrentHashMap<>();
     private volatile LocalTestSuite localTestSuite;
     private volatile String currentReportFolderPath;
     private volatile boolean stepScreenshotCaptureEnabled = false;
@@ -188,7 +194,7 @@ public class MervTestNGHandler implements IExecutionListener, ITestListener, IIn
                 if (payload.actual != null) req.setActual(payload.actual);
                 if (payload.testdata != null) req.setTestdata(payload.testdata);
                 if (payload.prereq != null) req.setPrereq(payload.prereq);
-                TestStepResponse created = client.createTestStep(req);
+                TestStepResponse created = createServerTestStep(req, caseId);
                 if ("FAILED".equalsIgnoreCase(payload.status)) {
                     try {
                         client.updateTestCaseStatus(caseId, TestCaseStatus.FAILED);
@@ -251,6 +257,7 @@ public class MervTestNGHandler implements IExecutionListener, ITestListener, IIn
     public void onExecutionFinish() {
         try {
             if (isMervEnabled()) {
+                finalizeRemainingServerCases();
                 finishServerMode();
                 cleanupThreadLocals();
                 return;
@@ -272,7 +279,7 @@ public class MervTestNGHandler implements IExecutionListener, ITestListener, IIn
         }
         if (isMervEnabled()) {
             ensureServerCaseForResult(result);
-            UUID caseId = serverCaseByResultKey.get(resultKey(result));
+            UUID caseId = resolveActiveServerCaseId(result);
             if (caseId != null) {
                 THREAD_LOCAL_CASE_ID.set(caseId);
             }
@@ -299,7 +306,7 @@ public class MervTestNGHandler implements IExecutionListener, ITestListener, IIn
             return;
         }
         if (isMervEnabled()) {
-            completeServerCase(result, "PASSED", null);
+            finalizeServerCase(result, "PASSED", null);
             MervPluginSteps.clear();
             return;
         }
@@ -315,7 +322,7 @@ public class MervTestNGHandler implements IExecutionListener, ITestListener, IIn
         Throwable throwable = result == null ? null : result.getThrowable();
         String reason = throwable == null ? "Test failed" : extractReadableErrorMessage(throwable);
         if (isMervEnabled()) {
-            completeServerCase(result, "FAILED", reason);
+            finalizeServerCase(result, "FAILED", reason);
             MervPluginSteps.clear();
             return;
         }
@@ -329,7 +336,7 @@ public class MervTestNGHandler implements IExecutionListener, ITestListener, IIn
             return;
         }
         if (isMervEnabled()) {
-            completeServerCase(result, "SKIPPED", null);
+            finalizeServerCase(result, "SKIPPED", null);
             MervPluginSteps.clear();
             return;
         }
@@ -374,7 +381,7 @@ public class MervTestNGHandler implements IExecutionListener, ITestListener, IIn
         step.setStartTime(new Date());
         step.setStatus("IN_PROGRESS");
         step.setTeststepName(resolveInvocationStepName(method));
-        step.setStepType(method.isTestMethod() ? "TEST_METHOD" : "CONFIG_METHOD");
+        step.setStepType(resolveInvocationStepType(method, null));
         localCase.getTestSteps().add(step);
         testResult.setAttribute(ATTR_STEP_ID, stepId.toString());
         THREAD_LOCAL_STEP_ID.set(stepId);
@@ -388,8 +395,11 @@ public class MervTestNGHandler implements IExecutionListener, ITestListener, IIn
         }
         if (isMervEnabled()) {
             finishServerStepForInvocation(method, testResult);
-            if (!method.isTestMethod() && method.getTestMethod() != null && method.getTestMethod().isAfterMethodConfiguration()) {
+            if (method.getTestMethod() != null && method.getTestMethod().isAfterMethodConfiguration()) {
+                finalizeServerCase(testResult, resolveResultStatus(testResult), failureReasonFrom(testResult));
                 THREAD_LOCAL_CASE_ID.remove();
+            } else if (method.isTestMethod() && !hasAfterMethodFor(testResult)) {
+                finalizeServerCase(testResult, resolveResultStatus(testResult), failureReasonFrom(testResult));
             }
             return;
         }
@@ -471,23 +481,7 @@ public class MervTestNGHandler implements IExecutionListener, ITestListener, IIn
     }
 
     private UUID resolveOrCreateSuite(MervClient cli) throws MervClientException {
-        String appendSuite = System.getenv("merv.append_suite") == null ? mervProp.getProperty("merv.append_suite") : System.getenv("merv.append_suite");
-        String suiteAlias = System.getenv("merv.append_suite_alias") == null ? mervProp.getProperty("merv.append_suite_alias") : System.getenv("merv.append_suite_alias");
-        if (appendSuite != null && !appendSuite.isBlank()) {
-            return UUID.fromString(appendSuite.trim());
-        }
-        if (suiteAlias != null && !suiteAlias.isBlank()) {
-            return cli.getTestSuiteIdByAlias(suiteAlias.trim());
-        }
-        TestSuiteRequest testSuite = new TestSuiteRequest();
-        testSuite.setTitle(mervProp.getProperty("merv.regression_suite", "TestNG Suite"));
-        String hierarchy = mervProp.getProperty("merv.parent_hierarchy");
-        if (hierarchy != null && !hierarchy.isBlank()) {
-            testSuite.setHierarchyId(UUID.fromString(hierarchy.trim()));
-        }
-        testSuite.setSprint(mervProp.getProperty("merv.sprint"));
-        TestSuiteResponse response = cli.createTestSuite(testSuite);
-        return response.getId();
+        return org.teche.merv.client.utils.MervSuiteBootstrap.resolveSuiteId(cli, mervProp, "TestNG Suite");
     }
 
     private void finishServerMode() {
@@ -509,14 +503,23 @@ public class MervTestNGHandler implements IExecutionListener, ITestListener, IIn
         suiteId = null;
         serverCaseByResultKey.clear();
         serverStepByMethodKey.clear();
+        serverCaseFinalized.clear();
     }
 
     private void ensureServerCaseForResult(ITestResult result) {
         if (result == null || client == null || suiteId == null) {
             return;
         }
-        String key = resultKey(result);
+        if (result.getMethod() == null || !result.getMethod().isTest()) {
+            return;
+        }
+        String key = stableTestResultKey(result);
+        result.setAttribute(ATTR_RESULT_KEY, key);
         if (serverCaseByResultKey.containsKey(key)) {
+            UUID existing = serverCaseByResultKey.get(key);
+            if (existing != null) {
+                result.setAttribute(ATTR_CASE_ID, existing.toString());
+            }
             return;
         }
         try {
@@ -531,43 +534,184 @@ public class MervTestNGHandler implements IExecutionListener, ITestListener, IIn
             if (created != null && created.getId() != null) {
                 serverCaseByResultKey.put(key, created.getId());
                 serverCaseByMethodKey.put(resultMethodInvocationKey(result), created.getId());
+                result.setAttribute(ATTR_CASE_ID, created.getId().toString());
             }
         } catch (Exception e) {
             System.err.println("MERV TestNG create test case failed: " + e.getMessage());
         }
     }
 
-    private void completeServerCase(ITestResult result, String status, String failureReason) {
+    /**
+     * Closes the testcase on the server: close open steps, {@code finishTestCase}, then apply TestNG outcome.
+     */
+    private void finalizeServerCase(ITestResult result, String status, String failureReason) {
         if (result == null || client == null) {
             return;
         }
-        ensureServerCaseForResult(result);
-        UUID caseId = serverCaseByResultKey.get(resultKey(result));
+        if (Boolean.TRUE.equals(result.getAttribute(ATTR_SERVER_CASE_FINALIZED))) {
+            return;
+        }
+        UUID caseId = resolveActiveServerCaseId(result);
         if (caseId == null) {
             return;
         }
+        String effectiveStatus = Boolean.TRUE.equals(serverCaseHasCustomFailure.get(caseId)) ? "FAILED" : status;
         try {
-            if (Boolean.TRUE.equals(serverCaseHasCustomFailure.get(caseId))) {
-                client.updateTestCaseStatus(caseId, TestCaseStatus.FAILED);
+            closeOpenServerSteps(caseId);
+            client.finishTestCase(caseId);
+            TestCaseStatus desired = toTestCaseStatus(effectiveStatus);
+            if (desired != null) {
+                client.updateTestCaseStatus(caseId, desired);
+            }
+            result.setAttribute(ATTR_SERVER_CASE_FINALIZED, Boolean.TRUE);
+            serverCaseFinalized.put(caseId, true);
+        } catch (MervClientException e) {
+            try {
+                TestCaseStatus desired = toTestCaseStatus(effectiveStatus);
+                if (desired != null) {
+                    client.updateTestCaseStatus(caseId, desired);
+                }
+                result.setAttribute(ATTR_SERVER_CASE_FINALIZED, Boolean.TRUE);
+                serverCaseFinalized.put(caseId, true);
+            } catch (MervClientException ignored) {
+                // best effort
+            }
+        }
+    }
+
+    private void finalizeRemainingServerCases() {
+        if (client == null) {
+            return;
+        }
+        for (UUID caseId : serverCaseByResultKey.values()) {
+            if (caseId == null || Boolean.TRUE.equals(serverCaseFinalized.get(caseId))) {
+                continue;
+            }
+            try {
+                closeOpenServerSteps(caseId);
+                client.finishTestCase(caseId);
+                serverCaseFinalized.put(caseId, true);
+            } catch (MervClientException ignored) {
+                // best effort at suite end
+            }
+        }
+    }
+
+    private void closeOpenServerSteps(UUID caseId) {
+        try {
+            List<TestStepResponse> steps = client.getTestStepsByTestCase(caseId);
+            if (steps == null) {
                 return;
             }
-            if ("PASSED".equals(status)) {
-                client.updateTestCaseStatus(caseId, TestCaseStatus.PASSED);
-            } else if ("FAILED".equals(status)) {
-                client.updateTestCaseStatus(caseId, TestCaseStatus.FAILED);
-            } else if ("SKIPPED".equals(status)) {
-                client.updateTestCaseStatus(caseId, TestCaseStatus.SKIPPED);
-            } else {
-                client.updateTestCaseStatus(caseId, TestCaseStatus.INPROGRESS);
+            for (TestStepResponse step : steps) {
+                if (step == null || step.getId() == null || step.getStatus() == null) {
+                    continue;
+                }
+                String stepStatus = step.getStatus().trim().toUpperCase(Locale.ROOT);
+                if ("IN_PROGRESS".equals(stepStatus) || "PENDING".equals(stepStatus)) {
+                    TestStepPatchRequest patch = new TestStepPatchRequest();
+                    patch.setStatus("SKIPPED");
+                    client.patchTestStep(step.getId(), patch);
+                }
             }
-        } catch (Exception e) {
-            System.err.println("MERV TestNG patch test case failed: " + e.getMessage());
+        } catch (MervClientException ignored) {
+            // finishTestCase on API also closes orphan steps
         }
+    }
+
+    private static String resolveResultStatus(ITestResult result) {
+        if (result == null) {
+            return "PASSED";
+        }
+        if (result.getThrowable() != null) {
+            return "FAILED";
+        }
+        if (result.getStatus() == ITestResult.SKIP) {
+            return "SKIPPED";
+        }
+        if (result.getStatus() == ITestResult.FAILURE) {
+            return "FAILED";
+        }
+        return "PASSED";
+    }
+
+    private String failureReasonFrom(ITestResult result) {
+        if (result == null || result.getThrowable() == null) {
+            return null;
+        }
+        return extractReadableErrorMessage(result.getThrowable());
+    }
+
+    private static boolean hasAfterMethodFor(ITestResult result) {
+        if (result == null || result.getTestClass() == null) {
+            return false;
+        }
+        Class<?> clazz = result.getTestClass().getRealClass();
+        while (clazz != null && clazz != Object.class) {
+            for (java.lang.reflect.Method m : clazz.getDeclaredMethods()) {
+                if (m.isAnnotationPresent(org.testng.annotations.AfterMethod.class)) {
+                    return true;
+                }
+            }
+            clazz = clazz.getSuperclass();
+        }
+        return false;
+    }
+
+    private static TestCaseStatus toTestCaseStatus(String status) {
+        if ("PASSED".equals(status)) {
+            return TestCaseStatus.PASSED;
+        }
+        if ("FAILED".equals(status)) {
+            return TestCaseStatus.FAILED;
+        }
+        if ("SKIPPED".equals(status)) {
+            return TestCaseStatus.SKIPPED;
+        }
+        return null;
+    }
+
+    private TestStepResponse createServerTestStep(TestStepRequest req, UUID caseId) throws MervClientException {
+        try {
+            return client.createTestStep(req);
+        } catch (MervClientException e) {
+            if (!isTestCaseNotOpenForStepsError(e)) {
+                throw e;
+            }
+            reopenServerCaseForMoreSteps(caseId);
+            return client.createTestStep(req);
+        }
+    }
+
+    private void patchServerTestStep(UUID stepId, UUID caseId, TestStepPatchRequest req) throws MervClientException {
+        try {
+            client.patchTestStep(stepId, req);
+        } catch (MervClientException e) {
+            if (!isTestCaseNotOpenForStepsError(e)) {
+                throw e;
+            }
+            reopenServerCaseForMoreSteps(caseId);
+            client.patchTestStep(stepId, req);
+        }
+    }
+
+    private void reopenServerCaseForMoreSteps(UUID caseId) throws MervClientException {
+        client.restartTestCase(caseId);
+        serverCaseFinalized.remove(caseId);
+    }
+
+    private static boolean isTestCaseNotOpenForStepsError(MervClientException e) {
+        String msg = e.getMessage();
+        return msg != null && msg.contains("Test case must be in 'INPROGRESS' status");
     }
 
     private void ensureServerStepForInvocation(IInvokedMethod method, ITestResult result) {
         if (client == null || result == null) {
             return;
+        }
+        if (method.getTestMethod() != null && method.getTestMethod().isBeforeMethodConfiguration()
+                && result.getMethod() != null && result.getMethod().isTest()) {
+            ensureServerCaseForResult(result);
         }
         UUID caseId = serverCaseForInvocation(method, result);
         if (caseId == null) {
@@ -580,16 +724,19 @@ public class MervTestNGHandler implements IExecutionListener, ITestListener, IIn
         try {
             TestStepRequest req = new TestStepRequest();
             req.setTeststepName(resolveInvocationStepName(method));
+            if (shouldUseInfoStepTypeAtCreate(method)) {
+                req.setStepType(StepType.INFORMATION.getApiValue());
+            }
             req.setExpected("Expected execution");
             req.setActual("In progress");
             req.setStatus("IN_PROGRESS");
             req.setTestcaseId(caseId);
-            TestStepResponse created = client.createTestStep(req);
+            TestStepResponse created = createServerTestStep(req, caseId);
             if (created != null && created.getId() != null) {
                 serverStepByMethodKey.put(methodKey, created.getId());
             }
-        } catch (Exception e) {
-            System.err.println("MERV TestNG create step failed: " + e.getMessage());
+        } catch (MervClientException ignored) {
+            // Recovered via restart+retry when possible; avoid noisy console when data still syncs
         }
     }
 
@@ -603,26 +750,34 @@ public class MervTestNGHandler implements IExecutionListener, ITestListener, IIn
             return;
         }
         try {
+            UUID caseId = serverCaseForInvocation(method, result);
             TestStepPatchRequest req = new TestStepPatchRequest();
             tryCaptureAutomationScreenshotServer(stepId);
+            if (isBeforeOrAfterMethod(method)) {
+                if (invocationFailed(result)) {
+                    req.setStepType(StepType.ASSERTION.getApiValue());
+                } else {
+                    req.setStepType(StepType.INFORMATION.getApiValue());
+                }
+            }
             if (result.getThrowable() != null) {
                 req.setStatus("FAILED");
                 req.setExpected("Expected execution");
                 req.setActual(extractReadableErrorMessage(result.getThrowable()));
-                client.patchTestStep(stepId, req);
+                patchServerTestStep(stepId, caseId, req);
             } else if (result.getStatus() == ITestResult.SKIP) {
                 req.setStatus("SKIPPED");
                 req.setExpected("Expected execution");
                 req.setActual("Skipped");
-                client.patchTestStep(stepId, req);
+                patchServerTestStep(stepId, caseId, req);
             } else {
                 req.setStatus("PASSED");
                 req.setExpected("Expected execution");
                 req.setActual("Executed successfully");
-                client.patchTestStep(stepId, req);
+                patchServerTestStep(stepId, caseId, req);
             }
-        } catch (Exception e) {
-            System.err.println("MERV TestNG patch step failed: " + e.getMessage());
+        } catch (MervClientException ignored) {
+            // best effort; no console noise
         } finally {
             serverStepByMethodKey.remove(methodKey);
         }
@@ -744,6 +899,7 @@ public class MervTestNGHandler implements IExecutionListener, ITestListener, IIn
                 jsonReport.put("lastActivityMillis", System.currentTimeMillis());
 
                 FileUtils.writeFile(jsonFolderPath + "merv-report.json", OBJECT_MAPPER.writeValueAsString(jsonReport));
+                MervFailureTestJsonWriter.writeFromJsonReport(currentReportFolderPath, jsonReport);
                 if (!completed) {
                     writeRunningHtmlSnapshots(currentReportFolderPath);
                 }
@@ -905,6 +1061,47 @@ public class MervTestNGHandler implements IExecutionListener, ITestListener, IIn
         return list;
     }
 
+    private static boolean isBeforeOrAfterMethod(IInvokedMethod method) {
+        if (method == null || method.getTestMethod() == null) {
+            return false;
+        }
+        return method.getTestMethod().isBeforeMethodConfiguration()
+                || method.getTestMethod().isAfterMethodConfiguration();
+    }
+
+    private static boolean invocationFailed(ITestResult result) {
+        if (result == null) {
+            return false;
+        }
+        if (result.getThrowable() != null) {
+            return true;
+        }
+        return result.getStatus() == ITestResult.FAILURE;
+    }
+
+    /** @Test and hook steps start as Info on the server; failed @Before/@After finish as Assertion. */
+    private static boolean shouldUseInfoStepTypeAtCreate(IInvokedMethod method) {
+        if (method == null) {
+            return false;
+        }
+        if (method.isTestMethod()) {
+            return true;
+        }
+        return isBeforeOrAfterMethod(method);
+    }
+
+    private static String resolveInvocationStepType(IInvokedMethod method, ITestResult testResult) {
+        if (method != null && method.isTestMethod()) {
+            return StepType.INFORMATION.getValue();
+        }
+        if (isBeforeOrAfterMethod(method)) {
+            return invocationFailed(testResult)
+                    ? StepType.ASSERTION.getValue()
+                    : StepType.INFORMATION.getValue();
+        }
+        return "CONFIG_METHOD";
+    }
+
     private String resolveInvocationStepName(IInvokedMethod method) {
         String qualified = method.getTestMethod() == null ? "unknown" : method.getTestMethod().getQualifiedName();
         if (method.isTestMethod()) {
@@ -949,27 +1146,58 @@ public class MervTestNGHandler implements IExecutionListener, ITestListener, IIn
         }
         if (method.isTestMethod()) {
             ensureServerCaseForResult(result);
-            return serverCaseByResultKey.get(resultKey(result));
         }
-        UUID caseId = serverCaseByResultKey.get(resultKey(result));
-        if (caseId == null) {
-            caseId = serverCaseByMethodKey.get(resultMethodInvocationKey(result));
-        }
-        if (caseId == null) {
-            caseId = THREAD_LOCAL_CASE_ID.get();
-        }
-        return caseId;
+        return resolveActiveServerCaseId(result);
     }
 
+    private UUID resolveActiveServerCaseId(ITestResult result) {
+        if (result == null) {
+            return THREAD_LOCAL_CASE_ID.get();
+        }
+        UUID caseId = readCaseId(result);
+        if (caseId != null) {
+            return caseId;
+        }
+        caseId = THREAD_LOCAL_CASE_ID.get();
+        if (caseId != null) {
+            return caseId;
+        }
+        String key = resultKey(result);
+        if (key != null) {
+            caseId = serverCaseByResultKey.get(key);
+            if (caseId != null) {
+                return caseId;
+            }
+        }
+        return serverCaseByMethodKey.get(resultMethodInvocationKey(result));
+    }
+
+    /** Key for the executing @Test (stored on start); ignores transient configuration method names on result. */
     private String resultKey(ITestResult result) {
+        if (result == null) {
+            return null;
+        }
+        Object stored = result.getAttribute(ATTR_RESULT_KEY);
+        if (stored != null) {
+            return String.valueOf(stored);
+        }
+        if (result.getMethod() != null && result.getMethod().isTest()) {
+            return stableTestResultKey(result);
+        }
+        return null;
+    }
+
+    private String stableTestResultKey(ITestResult result) {
         String cls = result.getTestClass() == null ? "UnknownClass" : result.getTestClass().getName();
         String method = result.getMethod() == null ? "unknownMethod" : result.getMethod().getMethodName();
-        long start = result.getStartMillis();
-        return cls + "#" + method + "#" + start;
+        return cls + "#" + method + resolveParameterSuffix(result);
     }
 
     private String methodKey(ITestResult result, IInvokedMethod method) {
         String base = resultKey(result);
+        if (base == null) {
+            base = resultMethodKey(result);
+        }
         String methodName = method != null && method.getTestMethod() != null ? method.getTestMethod().getMethodName() : "unknown";
         return base + "::" + methodName;
     }
@@ -1006,6 +1234,10 @@ public class MervTestNGHandler implements IExecutionListener, ITestListener, IIn
     }
 
     private String resultMethodKey(ITestResult result) {
+        String key = resultKey(result);
+        if (key != null) {
+            return key;
+        }
         if (result == null) {
             return "UnknownClass#unknownMethod";
         }
@@ -1106,7 +1338,7 @@ public class MervTestNGHandler implements IExecutionListener, ITestListener, IIn
         step.setStartTime(startMs > 0 ? new Date(startMs) : new Date());
         step.setEndTime(endMs > 0 ? new Date(endMs) : new Date());
         step.setTeststepName(resolveInvocationStepName(method));
-        step.setStepType(method != null && method.isTestMethod() ? "TEST_METHOD" : "CONFIG_METHOD");
+        step.setStepType(resolveInvocationStepType(method, testResult));
         if (testResult != null && testResult.getThrowable() != null) {
             step.setStatus("FAILED");
             step.setErrorMessage(extractReadableErrorMessage(testResult.getThrowable()));

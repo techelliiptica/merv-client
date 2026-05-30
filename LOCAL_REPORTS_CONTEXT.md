@@ -18,6 +18,9 @@ Assume `reportRoot` = value from `MervConfig.getReportFolder()` (trailing separa
 | `{reportRoot}/{runFolder}/html/merv-report.html` | Final suite report (often finalized from live). |
 | `{reportRoot}/{runFolder}/html/merv-report-live.html` | Live-updating suite report during execution. |
 | `{reportRoot}/{runFolder}/json/merv-report.json` | **Source of truth** for the dashboard and tooling. |
+| `{reportRoot}/{runFolder}/json/failure-test.json` | Failed testcases only (updated during the run). Linked from suite HTML. |
+| `{reportRoot}/{runFolder}/failure-test.json` | Copy of the same file when the suite **completes**. |
+| `{reportRoot}/failure-test.json` | Latest completed run’s failures (overwritten each time a suite finishes). |
 
 Run folder naming (Cucumber today): `dd-MM-yyyy HH-mm-ss Merv-Report`. Other frameworks should use a **single directory segment** name and the same relative layout under it (`html/`, `json/`).
 

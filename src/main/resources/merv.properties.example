@@ -29,10 +29,11 @@ merv.password=password
 # If configured, you can use getTestSuiteIdFromConfig() to get the suite ID
 merv.suite_alias=my-test-suite-alias
 
-# Parent hierarchy ID for creating test suites
-merv.parent_hierarchy=your-hierarchy-uuid-here
+# Optional: parent project (hierarchy) UUID for new suites.
+# If omitted, the API creates the suite under your Personal-workspace Default Project.
+# merv.parent_hierarchy=your-hierarchy-uuid-here
 
-# Regression suite title (used by Cucumber handler)
+# Title for a newly created test suite (required when not using merv.suite_alias / merv.append_suite)
 merv.regression_suite=Regression Test Suite
 
 # Sprint name

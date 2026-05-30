@@ -16,7 +16,7 @@ import java.util.Properties;
  * merv.username=admin
  * merv.password=password
  * merv.suite_alias=my-test-suite
- * merv.parent_hierarchy=uuid-here
+ * merv.parent_hierarchy=uuid-here  (optional; omit to use Default Project)
  * </pre>
  * 
  * @author MERV Client Team

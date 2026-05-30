@@ -20,7 +20,7 @@ public final class MervAssertions {
 
     public static void assertEquals(Object expected, Object actual, String stepName) {
         // Record first so the step is visible even if the assertion throws.
-        MervReporter.addValidationStep(stepName != null ? stepName : "assertEquals",
+        MervReporter.validation(stepName != null ? stepName : "assertEquals",
                 String.valueOf(expected),
                 String.valueOf(actual));
         Assertions.assertEquals(expected, actual);
@@ -31,7 +31,7 @@ public final class MervAssertions {
     }
 
     public static void assertTrue(boolean condition, String stepName) {
-        MervReporter.addValidationStep(stepName != null ? stepName : "assertTrue", "true", String.valueOf(condition));
+        MervReporter.validation(stepName != null ? stepName : "assertTrue", "true", String.valueOf(condition));
         Assertions.assertTrue(condition);
     }
 
@@ -40,7 +40,7 @@ public final class MervAssertions {
     }
 
     public static void assertFalse(boolean condition, String stepName) {
-        MervReporter.addValidationStep(stepName != null ? stepName : "assertFalse", "false", String.valueOf(condition));
+        MervReporter.validation(stepName != null ? stepName : "assertFalse", "false", String.valueOf(condition));
         Assertions.assertFalse(condition);
     }
 
@@ -49,7 +49,7 @@ public final class MervAssertions {
     }
 
     public static void assertNotNull(Object value, String stepName) {
-        MervReporter.addValidationStep(stepName != null ? stepName : "assertNotNull", "non-null", String.valueOf(value));
+        MervReporter.validation(stepName != null ? stepName : "assertNotNull", "non-null", String.valueOf(value));
         Assertions.assertNotNull(value);
     }
 }

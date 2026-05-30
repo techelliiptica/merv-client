@@ -17,8 +17,8 @@ import java.util.UUID;
 @NoArgsConstructor
 public class TestSuiteResponse {
     
-    @JsonProperty("id")
-    @com.fasterxml.jackson.annotation.JsonAlias("uuid")
+    @JsonProperty("uuid")
+    @com.fasterxml.jackson.annotation.JsonAlias("id")
     private UUID id;
     
     @JsonProperty("hierarchy_id")

@@ -1,5 +1,6 @@
 package org.teche.merv.client;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import org.apache.hc.client5.http.classic.methods.*;
@@ -50,9 +51,7 @@ public class MervClient implements AutoCloseable {
         this.baseUrl = baseUrl.endsWith("/") ? baseUrl.substring(0, baseUrl.length() - 1) : baseUrl;
         this.authManager = new AuthManager(baseUrl, username, password);
         this.httpClient = HttpClients.createDefault();
-        this.objectMapper = new ObjectMapper();
-        this.objectMapper.registerModule(new JavaTimeModule());
-        this.objectMapper.configure(com.fasterxml.jackson.databind.DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
+        this.objectMapper = createObjectMapper();
     }
     
     /**
@@ -69,9 +68,7 @@ public class MervClient implements AutoCloseable {
         this.apiKey = apiKey;
         this.authManager = null; // No auth manager for API key
         this.httpClient = HttpClients.createDefault();
-        this.objectMapper = new ObjectMapper();
-        this.objectMapper.registerModule(new JavaTimeModule());
-        this.objectMapper.configure(com.fasterxml.jackson.databind.DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
+        this.objectMapper = createObjectMapper();
     }
     
     /**
@@ -86,11 +83,17 @@ public class MervClient implements AutoCloseable {
         this.baseUrl = baseUrl.endsWith("/") ? baseUrl.substring(0, baseUrl.length() - 1) : baseUrl;
         this.authManager = null; // No auth manager for legacy constructor
         this.httpClient = HttpClients.createDefault();
-        this.objectMapper = new ObjectMapper();
-        this.objectMapper.registerModule(new JavaTimeModule());
-        this.objectMapper.configure(com.fasterxml.jackson.databind.DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
+        this.objectMapper = createObjectMapper();
         // Store the token directly (legacy behavior)
         this.legacyAccessToken = accessToken;
+    }
+
+    private static ObjectMapper createObjectMapper() {
+        ObjectMapper mapper = new ObjectMapper();
+        mapper.registerModule(new JavaTimeModule());
+        mapper.setSerializationInclusion(JsonInclude.Include.NON_NULL);
+        mapper.configure(com.fasterxml.jackson.databind.DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
+        return mapper;
     }
     
     /**
@@ -343,6 +346,11 @@ public class MervClient implements AutoCloseable {
      * @throws MervClientException if the request fails
      */
     public TestCaseResponse createTestCase(TestCaseRequest request) throws MervClientException {
+        if (request.getTestSuiteId() == null) {
+            throw new MervClientException(
+                    "test_suite_id is required. Ensure suite bootstrap succeeded "
+                            + "(merv.regression_suite creates a suite when merv.parent_hierarchy is omitted)");
+        }
         try {
             String json = objectMapper.writeValueAsString(request);
             HttpPost httpPost = new HttpPost(baseUrl + "/testcases");
@@ -440,7 +448,8 @@ public class MervClient implements AutoCloseable {
                 if (response.getCode() == 200) {
                     return objectMapper.readValue(responseBody, TestCaseResponse.class);
                 } else {
-                    throw new MervClientException("Failed to update test case status: " + responseBody);
+                    throw new MervClientException(
+                            "Failed to update test case status (HTTP " + response.getCode() + "): " + responseBody);
                 }
             }
         } catch (IOException | ParseException e) {
