@@ -403,6 +403,8 @@ public class MervJUnitHandler implements BeforeAllCallback, AfterAllCallback, Be
             }
             persistLocalRuntimeSnapshot(true);
             refreshReportsIndexListing();
+            org.teche.merv.client.report.html.MervLocalReportZipWriter.writeUploadZipIfEnabled(
+                    new File(currentReportFolderPath));
         } catch (Exception e) {
             System.err.println("Error generating JUnit5 local reports: " + e.getMessage());
         }

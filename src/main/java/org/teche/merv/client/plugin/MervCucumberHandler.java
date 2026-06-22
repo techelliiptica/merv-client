@@ -1610,6 +1610,8 @@ html.append("function applySidebarFilters(){var visible=0;document.querySelector
 
             System.out.println("Merv Report generation completed: " + reportFolderPath);
             refreshReportsIndexListing();
+            org.teche.merv.client.report.html.MervLocalReportZipWriter.writeUploadZipIfEnabled(
+                    new File(reportFolderPath));
 
         } catch (Exception e) {
             System.err.println("Error generating local reports: " + e.getMessage());

@@ -953,6 +953,8 @@ public class MervTestNGHandler implements IExecutionListener, ITestListener, IIn
             }
             persistLocalRuntimeSnapshot(true);
             refreshReportsIndexListing();
+            org.teche.merv.client.report.html.MervLocalReportZipWriter.writeUploadZipIfEnabled(
+                    new File(currentReportFolderPath));
         } catch (Exception e) {
             System.err.println("Error generating TestNG local reports: " + e.getMessage());
         }

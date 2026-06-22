@@ -50,6 +50,9 @@ merv.execution.parallel=false
 # Accepts: on, true, yes, 1 (also accepts legacy key "screenshot")
 # merv.screenshot=on
 
+# Local report upload bundle for MERV UI (json/merv-report.json + screenshots → merv-report-upload.zip)
+# merv.zip.export=true
+
 # ============================================================================
 # Example Usage
 # ============================================================================
