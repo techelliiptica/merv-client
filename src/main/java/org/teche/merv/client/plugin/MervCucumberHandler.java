@@ -272,8 +272,12 @@ public class MervCucumberHandler implements ConcurrentEventListener {
                     tc.getTestSteps().add(localStep);
                     if ("FAILED".equalsIgnoreCase(payload.status)) {
                         tc.setStatus("FAILED");
-                        if (tc.getFailureReason() == null || tc.getFailureReason().isBlank()) {
-                            tc.setFailureReason(payload.errorMessage != null ? payload.errorMessage : "Validation/custom step failed");
+                        String msg = payload.errorMessage != null ? payload.errorMessage : "Validation/custom step failed";
+                        String existing = tc.getFailureReason();
+                        if (existing == null || existing.isBlank()) {
+                            tc.setFailureReason(msg);
+                        } else if (!existing.contains(msg)) {
+                            tc.setFailureReason(existing.trim() + "\n\n" + msg);
                         }
                     }
                 }
