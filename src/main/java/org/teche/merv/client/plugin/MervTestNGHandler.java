@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.SerializationFeature;
 import org.teche.merv.client.MervClient;
 import org.teche.merv.client.config.MervConfig;
 import org.teche.merv.client.dto.StepType;
+import org.teche.merv.client.dto.FileType;
 import org.teche.merv.client.dto.TestCaseRequest;
 import org.teche.merv.client.dto.TestCaseResponse;
 import org.teche.merv.client.dto.TestCaseStatus;
@@ -19,7 +20,9 @@ import org.teche.merv.client.report.html.MervReportBranding;
 import org.teche.merv.client.report.html.MervConsolidatedFailureReasonsWriter;
 import org.teche.merv.client.report.html.MervFailureTestJsonWriter;
 import org.teche.merv.client.report.html.MervReportsIndexHtmlWriter;
+import org.teche.merv.client.report.html.MervTestDataFileHtml;
 import org.teche.merv.client.utils.FileUtils;
+import org.teche.merv.client.utils.MervPropertyFlags;
 import org.testng.IExecutionListener;
 import org.testng.IInvokedMethod;
 import org.testng.IInvokedMethodListener;
@@ -119,7 +122,7 @@ public class MervTestNGHandler implements IExecutionListener, ITestListener, IIn
 
     /**
      * Registers the automation driver/page used for optional per-step screenshots when
-     * {@code merv.screenshot=on} (or {@code screenshot=on}) is set in {@code merv.properties}.
+     * {@code merv.screenshot=true} (legacy {@code on}, {@code yes}, {@code 1}; or {@code screenshot=true}) is set in {@code merv.properties}.
      *
      * @param automationToolName identifies how {@code driverObject} should be interpreted
      * @param driverObject       Selenium {@code WebDriver}, Playwright {@code Page}, etc.
@@ -205,6 +208,49 @@ public class MervTestNGHandler implements IExecutionListener, ITestListener, IIn
                 }
                 return created;
             }
+
+            @Override
+            public void addLocalFileStep(String stepName, File file, FileType fileType, String prereq)
+                    throws MervClientException {
+                UUID caseId = THREAD_LOCAL_CASE_ID.get();
+                if (caseId == null) {
+                    throw new MervClientException(
+                            "No active test case found. Step creation must be called during an active test case execution.");
+                }
+                LocalTestCase localCase = localTestCases.get(caseId);
+                if (localCase == null) {
+                    throw new MervClientException(
+                            "No active test case found. Step creation must be called during an active test case execution.");
+                }
+                LocalTestStep step = new LocalTestStep();
+                step.setId(UUID.randomUUID());
+                step.setTeststepName(stepName);
+                step.setStepType(StepType.TESTDATA.getApiValue());
+                step.setStatus("PASSED");
+                step.setStartTime(new Date());
+                step.setEndTime(new Date());
+                step.setPrereq(prereq);
+                List<MervTestDataFileHtml.AttachedFile> attached =
+                        MervPluginFileDataSupport.saveAttachedFiles(file, currentReportFolderPath);
+                if (attached != null) {
+                    step.setAttachedFiles(attached);
+                } else {
+                    step.setTestdata(MervPluginFileDataSupport.fallbackTestdata(file, fileType));
+                }
+                tryCaptureAutomationScreenshotLocal(step);
+                localCase.getTestSteps().add(step);
+                persistLocalRuntimeSnapshot(false);
+            }
+
+            @Override
+            public TestStepResponse addServerFileStep(
+                    String stepName,
+                    File file,
+                    FileType fileType,
+                    String prereq) throws MervClientException {
+                return MervPluginFileDataSupport.createServerFileStep(
+                        client, THREAD_LOCAL_CASE_ID.get(), stepName, file, fileType, prereq);
+            }
         });
     }
 
@@ -220,7 +266,7 @@ public class MervTestNGHandler implements IExecutionListener, ITestListener, IIn
                 throw new IllegalStateException("merv.properties file not available in project root.");
             }
             mervProp.load(new FileInputStream(propFile));
-            stepScreenshotCaptureEnabled = readScreenshotEnabledFromProperties(mervProp);
+            stepScreenshotCaptureEnabled = MervPropertyFlags.isScreenshotEnabled(mervProp);
 
             if (isMervEnabled()) {
                 initializeServerMode();
@@ -604,13 +650,11 @@ public class MervTestNGHandler implements IExecutionListener, ITestListener, IIn
                 return;
             }
             for (TestStepResponse step : steps) {
-                if (step == null || step.getId() == null || step.getStatus() == null) {
+                if (step == null || step.getId() == null) {
                     continue;
                 }
-                String stepStatus = step.getStatus().trim().toUpperCase(Locale.ROOT);
-                if ("IN_PROGRESS".equals(stepStatus) || "PENDING".equals(stepStatus)) {
-                    TestStepPatchRequest patch = new TestStepPatchRequest();
-                    patch.setStatus("SKIPPED");
+                TestStepPatchRequest patch = MervServerStepFinalizeSupport.patchForOpenStep(step);
+                if (patch != null) {
                     client.patchTestStep(step.getId(), patch);
                 }
             }
@@ -940,17 +984,10 @@ public class MervTestNGHandler implements IExecutionListener, ITestListener, IIn
             String liveHtml = htmlFolderPath + "merv-report-live.html";
             String liveHtmlAlt = htmlFolderPath + "merv-live-report.html";
             String finalHtml = htmlFolderPath + "merv-report.html";
-            if (new File(liveHtml).isFile()) {
-                Files.copy(Paths.get(liveHtml), Paths.get(finalHtml), java.nio.file.StandardCopyOption.REPLACE_EXISTING);
-                Files.copy(Paths.get(liveHtml), Paths.get(liveHtmlAlt), java.nio.file.StandardCopyOption.REPLACE_EXISTING);
-            } else if (new File(liveHtmlAlt).isFile()) {
-                Files.copy(Paths.get(liveHtmlAlt), Paths.get(finalHtml), java.nio.file.StandardCopyOption.REPLACE_EXISTING);
-            } else {
-                String content = buildLiveHtmlReportContent();
-                FileUtils.writeFile(finalHtml, content);
-                FileUtils.writeFile(liveHtml, content);
-                FileUtils.writeFile(liveHtmlAlt, content);
-            }
+            String content = buildLiveHtmlReportContent();
+            FileUtils.writeFile(finalHtml, content);
+            FileUtils.writeFile(liveHtml, content);
+            FileUtils.writeFile(liveHtmlAlt, content);
             persistLocalRuntimeSnapshot(true);
             refreshReportsIndexListing();
             org.teche.merv.client.report.html.MervLocalReportZipWriter.writeUploadZipIfEnabled(
@@ -972,22 +1009,6 @@ public class MervTestNGHandler implements IExecutionListener, ITestListener, IIn
             System.err.println("Could not update reports index: " + e.getMessage());
         }
     }
-
-    private static boolean readScreenshotEnabledFromProperties(Properties p) {
-        if (p == null) {
-            return false;
-        }
-        String v = p.getProperty("merv.screenshot");
-        if (v == null) {
-            v = p.getProperty("screenshot");
-        }
-        if (v == null) {
-            return false;
-        }
-        String normalized = v.trim().toLowerCase(Locale.ROOT);
-        return "on".equals(normalized) || "true".equals(normalized) || "yes".equals(normalized) || "1".equals(normalized);
-    }
-
     private boolean isMervEnabled() {
         if (mervProp.isEmpty()) {
             return false;
@@ -1429,6 +1450,7 @@ public class MervTestNGHandler implements IExecutionListener, ITestListener, IIn
         private String prereq;
         private List<String> screenshots;
         private List<String> logs;
+        private List<MervTestDataFileHtml.AttachedFile> attachedFiles;
 
         public UUID getId() { return id; }
         public void setId(UUID id) { this.id = id; }
@@ -1456,5 +1478,9 @@ public class MervTestNGHandler implements IExecutionListener, ITestListener, IIn
         public void setScreenshots(List<String> screenshots) { this.screenshots = screenshots; }
         public List<String> getLogs() { return logs; }
         public void setLogs(List<String> logs) { this.logs = logs; }
+        public List<MervTestDataFileHtml.AttachedFile> getAttachedFiles() { return attachedFiles; }
+        public void setAttachedFiles(List<MervTestDataFileHtml.AttachedFile> attachedFiles) {
+            this.attachedFiles = attachedFiles;
+        }
     }
 }

@@ -35,6 +35,8 @@ public class MervConfig {
     private static final String PROP_SPRINT = "merv.sprint";
     private static final String PROP_EXECUTION_PARALLEL = "merv.execution.parallel";
     private static final String PROP_REPORT_FOLDER = "merv.report.folder";
+    /** Default on-disk report root when {@code merv.report.folder} is omitted (aligned with merv-client-js). */
+    private static final String DEFAULT_REPORT_FOLDER_NAME = "merv-reports";
     
     private static volatile Properties properties;
     private static volatile boolean initialized = false;
@@ -150,28 +152,30 @@ public class MervConfig {
     
     /**
      * Get the report folder path from configuration.
-     * If not configured, defaults to "reports" in the project root.
-     * 
-     * @return the report folder path
+     * When {@code merv.report.folder} is not set, defaults to {@code merv-reports/} in the project root
+     * (same convention as merv-client-js).
+     *
+     * @return the report folder path (always ends with a file separator)
      */
     public static String getReportFolder() {
         String reportFolder = getProperty(PROP_REPORT_FOLDER);
         if (reportFolder == null || reportFolder.trim().isEmpty()) {
-            // Default to "reports" folder in project root
-            return System.getProperty("user.dir") + File.separator + "reports" + File.separator;
+            return System.getProperty("user.dir") + File.separator + DEFAULT_REPORT_FOLDER_NAME + File.separator;
         }
-        
-        // Ensure the path ends with a separator
-        String normalizedPath = reportFolder.trim();
+
+        return normalizeReportFolderPath(reportFolder.trim());
+    }
+
+    private static String normalizeReportFolderPath(String reportFolder) {
+        String normalizedPath = reportFolder;
         if (!normalizedPath.endsWith(File.separator)) {
             normalizedPath += File.separator;
         }
-        
-        // If it's a relative path, make it relative to project root
+
         if (!new File(normalizedPath).isAbsolute()) {
             normalizedPath = System.getProperty("user.dir") + File.separator + normalizedPath;
         }
-        
+
         return normalizedPath;
     }
 }

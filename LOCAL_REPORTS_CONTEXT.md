@@ -21,6 +21,7 @@ Assume `reportRoot` = value from `MervConfig.getReportFolder()` (trailing separa
 | `{reportRoot}/{runFolder}/json/failure-test.json` | Failed testcases only (updated during the run). Linked from suite HTML. |
 | `{reportRoot}/{runFolder}/failure-test.json` | Copy of the same file when the suite **completes**. |
 | `{reportRoot}/failure-test.json` | Latest completed run’s failures (overwritten each time a suite finishes). |
+| `{reportRoot}/{runFolder}/merv-report-upload.zip` | Upload bundle for MERV UI import (`json/merv-report.json` + screenshots). Created when `merv.zip.export=true` (default). |
 
 Run folder naming (Cucumber today): `dd-MM-yyyy HH-mm-ss Merv-Report`. Other frameworks should use a **single directory segment** name and the same relative layout under it (`html/`, `json/`).
 
@@ -31,6 +32,7 @@ Run folder naming (Cucumber today): `dd-MM-yyyy HH-mm-ss Merv-Report`. Other fra
 | `MervReportBranding` | Logo URL, gradient CSS, stale-run threshold for live UI. |
 | `MervHtmlEscape` | Escaping user-controlled text in generated HTML. |
 | `MervReportsIndexHtmlWriter` | Builds/refreshes **`index.html`**. Call **`write(String reportRoot)`** after JSON exists or after deleting a run folder. |
+| `MervLocalReportZipWriter` | Builds **`merv-report-upload.zip`** for MERV UI testcase import. Call **`writeUploadZipIfEnabled(runFolder)`** after final JSON exists. |
 
 **Do not** reimplement `index.html` inside a TestNG/JUnit listener; call `MervReportsIndexHtmlWriter.write(...)`.
 

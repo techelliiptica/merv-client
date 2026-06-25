@@ -15,6 +15,7 @@ import org.junit.jupiter.api.extension.TestWatcher;
 import org.teche.merv.client.MervClient;
 import org.teche.merv.client.config.MervConfig;
 import org.teche.merv.client.dto.StepType;
+import org.teche.merv.client.dto.FileType;
 import org.teche.merv.client.dto.TestCaseRequest;
 import org.teche.merv.client.dto.TestCaseResponse;
 import org.teche.merv.client.dto.TestCaseStatus;
@@ -26,7 +27,9 @@ import org.teche.merv.client.exception.MervClientException;
 import org.teche.merv.client.report.html.MervConsolidatedFailureReasonsWriter;
 import org.teche.merv.client.report.html.MervFailureTestJsonWriter;
 import org.teche.merv.client.report.html.MervReportsIndexHtmlWriter;
+import org.teche.merv.client.report.html.MervTestDataFileHtml;
 import org.teche.merv.client.utils.FileUtils;
+import org.teche.merv.client.utils.MervPropertyFlags;
 
 import java.io.File;
 import java.io.FileInputStream;
@@ -106,6 +109,10 @@ public class MervJUnitHandler implements BeforeAllCallback, AfterAllCallback, Be
     private static final ThreadLocal<AutomationTool> THREAD_LOCAL_AUTOMATION_TOOL = new ThreadLocal<>();
     private static final ThreadLocal<Object> THREAD_LOCAL_AUTOMATION_DRIVER = new ThreadLocal<>();
 
+    /**
+     * Registers the automation driver/page used for optional per-step screenshots when
+     * {@code merv.screenshot=true} (legacy {@code on}, {@code yes}, {@code 1}; or {@code screenshot=true}) is set in {@code merv.properties}.
+     */
     public static void setAutomationToolObject(AutomationTool automationToolName, Object driverObject) {
         if (automationToolName == null) {
             THREAD_LOCAL_AUTOMATION_TOOL.remove();
@@ -121,7 +128,7 @@ public class MervJUnitHandler implements BeforeAllCallback, AfterAllCallback, Be
         try {
             loadMervProperties();
             bindSharedStepApis();
-            stepScreenshotCaptureEnabled = readScreenshotEnabledFromProperties(mervProp);
+            stepScreenshotCaptureEnabled = MervPropertyFlags.isScreenshotEnabled(mervProp);
 
             if (isMervEnabled()) {
                 initializeServerMode();
@@ -162,6 +169,7 @@ public class MervJUnitHandler implements BeforeAllCallback, AfterAllCallback, Be
                 return;
             }
             if (localTestSuite != null) {
+                finalizeRemainingLocalCases();
                 localTestSuite.setEndTime(new Date());
                 persistLocalRuntimeSnapshot(true);
             }
@@ -265,6 +273,9 @@ public class MervJUnitHandler implements BeforeAllCallback, AfterAllCallback, Be
 
     @Override
     public void afterEach(ExtensionContext context) {
+        if (!isMervEnabled()) {
+            finalizeLocalCaseAfterTest(context, null, null);
+        }
         MervPluginSteps.clear();
     }
 
@@ -301,22 +312,26 @@ public class MervJUnitHandler implements BeforeAllCallback, AfterAllCallback, Be
     @Override
     public void testSuccessful(ExtensionContext context) {
         completeCase(context, "PASSED", null);
+        MervPluginSteps.clear();
     }
 
     @Override
     public void testFailed(ExtensionContext context, Throwable cause) {
         completeCase(context, "FAILED", extractReadableErrorMessage(cause));
+        MervPluginSteps.clear();
     }
 
     @Override
     public void testAborted(ExtensionContext context, Throwable cause) {
         // Map aborted to SKIPPED for local dashboard consistency
         completeCase(context, "SKIPPED", extractReadableErrorMessage(cause));
+        MervPluginSteps.clear();
     }
 
     @Override
     public void testDisabled(ExtensionContext context, Optional<String> reason) {
         completeCase(context, "SKIPPED", reason.orElse(null));
+        MervPluginSteps.clear();
     }
 
     // ---------------- Local mode ----------------
@@ -390,17 +405,10 @@ public class MervJUnitHandler implements BeforeAllCallback, AfterAllCallback, Be
             String liveHtml = htmlFolderPath + "merv-report-live.html";
             String liveHtmlAlt = htmlFolderPath + "merv-live-report.html";
             String finalHtml = htmlFolderPath + "merv-report.html";
-            if (new File(liveHtml).isFile()) {
-                Files.copy(Paths.get(liveHtml), Paths.get(finalHtml), java.nio.file.StandardCopyOption.REPLACE_EXISTING);
-                Files.copy(Paths.get(liveHtml), Paths.get(liveHtmlAlt), java.nio.file.StandardCopyOption.REPLACE_EXISTING);
-            } else if (new File(liveHtmlAlt).isFile()) {
-                Files.copy(Paths.get(liveHtmlAlt), Paths.get(finalHtml), java.nio.file.StandardCopyOption.REPLACE_EXISTING);
-            } else {
-                String content = MervCucumberHandler.buildLiveHtmlReportContent();
-                FileUtils.writeFile(finalHtml, content);
-                FileUtils.writeFile(liveHtml, content);
-                FileUtils.writeFile(liveHtmlAlt, content);
-            }
+            String content = MervCucumberHandler.buildLiveHtmlReportContent();
+            FileUtils.writeFile(finalHtml, content);
+            FileUtils.writeFile(liveHtml, content);
+            FileUtils.writeFile(liveHtmlAlt, content);
             persistLocalRuntimeSnapshot(true);
             refreshReportsIndexListing();
             org.teche.merv.client.report.html.MervLocalReportZipWriter.writeUploadZipIfEnabled(
@@ -466,21 +474,98 @@ public class MervJUnitHandler implements BeforeAllCallback, AfterAllCallback, Be
             THREAD_LOCAL_CASE_ID.remove();
             return;
         }
-        LocalTestCase localCase = ensureLocalCaseForContext(testContext);
+        finalizeLocalCaseAfterTest(context, status, failureReason);
+    }
+
+    private void finalizeLocalCaseAfterTest(ExtensionContext context, String preferredStatus, String failureReason) {
+        ExtensionContext testContext = resolveTestContext(context);
+        if (testContext == null || testContext.getTestMethod().isEmpty()) {
+            return;
+        }
+        if (Boolean.TRUE.equals(testContext.getStore(MERV_STORE).get(STORE_CASE_FINALIZED))) {
+            return;
+        }
+        UUID caseId = testContext.getStore(MERV_STORE).get(STORE_CASE_ID, UUID.class);
+        LocalTestCase localCase = caseId != null ? localCases.get(caseId) : null;
+        if (localCase == null) {
+            localCase = ensureLocalCaseForContext(testContext);
+        }
         if (localCase == null) {
             return;
         }
-        if (Boolean.TRUE.equals(localCaseHasCustomFailure.get(localCase.getId()))) {
-            status = "FAILED";
+        closeOrphanedLocalSteps(localCase);
+        String status = resolveLocalCaseStatus(testContext, localCase, preferredStatus);
+        if ("FAILED".equals(status) && (failureReason == null || failureReason.isBlank())) {
+            failureReason = localCase.getFailureReason();
+            if (failureReason == null || failureReason.isBlank()) {
+                failureReason = testContext.getExecutionException()
+                        .map(this::extractReadableErrorMessage)
+                        .orElse("Test failed");
+            }
         }
         localCase.setEndTime(new Date());
         localCase.setStatus(status);
         if (failureReason != null && !failureReason.isBlank()) {
             localCase.setFailureReason(failureReason);
         }
-        persistLocalRuntimeSnapshot(false);
+        testContext.getStore(MERV_STORE).put(STORE_CASE_FINALIZED, Boolean.TRUE);
         THREAD_LOCAL_CASE_ID.remove();
-        MervPluginSteps.clear();
+        persistLocalRuntimeSnapshot(false);
+    }
+
+    private String resolveLocalCaseStatus(ExtensionContext testContext, LocalTestCase localCase, String preferredStatus) {
+        if (Boolean.TRUE.equals(localCaseHasCustomFailure.get(localCase.getId()))) {
+            return "FAILED";
+        }
+        if (localCase.getTestSteps() != null) {
+            for (LocalTestStep step : localCase.getTestSteps()) {
+                if (step != null && "FAILED".equalsIgnoreCase(String.valueOf(step.getStatus()))) {
+                    return "FAILED";
+                }
+            }
+        }
+        if (testContext != null && testContext.getExecutionException().isPresent()) {
+            return "FAILED";
+        }
+        if (preferredStatus != null && !preferredStatus.isBlank()) {
+            return preferredStatus.toUpperCase(Locale.ROOT);
+        }
+        return "PASSED";
+    }
+
+    private void finalizeRemainingLocalCases() {
+        if (localTestSuite == null || localTestSuite.getTestCases() == null) {
+            return;
+        }
+        Date now = new Date();
+        for (LocalTestCase localCase : localTestSuite.getTestCases()) {
+            if (localCase == null || localCase.getId() == null) {
+                continue;
+            }
+            if (!"IN_PROGRESS".equalsIgnoreCase(String.valueOf(localCase.getStatus()))) {
+                continue;
+            }
+            closeOrphanedLocalSteps(localCase);
+            localCase.setStatus(resolveLocalCaseStatus(null, localCase, "PASSED"));
+            if (localCase.getEndTime() == null) {
+                localCase.setEndTime(now);
+            }
+        }
+    }
+
+    private static void closeOrphanedLocalSteps(LocalTestCase localCase) {
+        if (localCase == null || localCase.getTestSteps() == null) {
+            return;
+        }
+        Date now = new Date();
+        for (LocalTestStep step : localCase.getTestSteps()) {
+            if (step != null && "IN_PROGRESS".equalsIgnoreCase(String.valueOf(step.getStatus()))) {
+                step.setStatus("SKIPPED");
+                if (step.getEndTime() == null) {
+                    step.setEndTime(now);
+                }
+            }
+        }
     }
 
     private void interceptLifecycleInvocation(InvocationKind kind,
@@ -695,13 +780,11 @@ public class MervJUnitHandler implements BeforeAllCallback, AfterAllCallback, Be
                 return;
             }
             for (TestStepResponse step : steps) {
-                if (step == null || step.getId() == null || step.getStatus() == null) {
+                if (step == null || step.getId() == null) {
                     continue;
                 }
-                String stepStatus = step.getStatus().trim().toUpperCase(Locale.ROOT);
-                if ("IN_PROGRESS".equals(stepStatus) || "PENDING".equals(stepStatus)) {
-                    TestStepPatchRequest patch = new TestStepPatchRequest();
-                    patch.setStatus("SKIPPED");
+                TestStepPatchRequest patch = MervServerStepFinalizeSupport.patchForOpenStep(step);
+                if (patch != null) {
                     client.patchTestStep(step.getId(), patch);
                 }
             }
@@ -1101,6 +1184,52 @@ public class MervJUnitHandler implements BeforeAllCallback, AfterAllCallback, Be
                 }
                 return created;
             }
+
+            @Override
+            public void addLocalFileStep(String stepName, File file, FileType fileType, String prereq)
+                    throws MervClientException {
+                UUID caseId = THREAD_LOCAL_CASE_ID.get();
+                if (caseId == null) {
+                    throw new MervClientException(
+                            "No active test case found. Step creation must be called during an active test case execution.");
+                }
+                LocalTestCase localCase = localCases.get(caseId);
+                if (localCase == null) {
+                    throw new MervClientException(
+                            "No active test case found. Step creation must be called during an active test case execution.");
+                }
+                LocalTestStep step = new LocalTestStep();
+                step.setId(UUID.randomUUID());
+                step.setTeststepName(stepName);
+                step.setStepType(StepType.TESTDATA.getApiValue());
+                step.setStatus("PASSED");
+                step.setStartTime(new Date());
+                step.setEndTime(new Date());
+                step.setPrereq(prereq);
+                List<MervTestDataFileHtml.AttachedFile> attached =
+                        MervPluginFileDataSupport.saveAttachedFiles(file, currentReportFolderPath);
+                if (attached != null) {
+                    step.setAttachedFiles(attached);
+                } else {
+                    step.setTestdata(MervPluginFileDataSupport.fallbackTestdata(file, fileType));
+                }
+                tryCaptureAutomationScreenshotLocal(step);
+                if (localCase.getTestSteps() == null) {
+                    localCase.setTestSteps(new ArrayList<>());
+                }
+                localCase.getTestSteps().add(step);
+                persistLocalRuntimeSnapshot(false);
+            }
+
+            @Override
+            public TestStepResponse addServerFileStep(
+                    String stepName,
+                    File file,
+                    FileType fileType,
+                    String prereq) throws MervClientException {
+                return MervPluginFileDataSupport.createServerFileStep(
+                        client, THREAD_LOCAL_CASE_ID.get(), stepName, file, fileType, prereq);
+            }
         });
     }
 
@@ -1179,22 +1308,6 @@ public class MervJUnitHandler implements BeforeAllCallback, AfterAllCallback, Be
         }
         return throwable.getClass().getSimpleName();
     }
-
-    private static boolean readScreenshotEnabledFromProperties(Properties p) {
-        if (p == null) {
-            return false;
-        }
-        String v = p.getProperty("merv.screenshot");
-        if (v == null) {
-            v = p.getProperty("screenshot");
-        }
-        if (v == null) {
-            return false;
-        }
-        String normalized = v.trim().toLowerCase(Locale.ROOT);
-        return "on".equals(normalized) || "true".equals(normalized) || "yes".equals(normalized) || "1".equals(normalized);
-    }
-
     private void tryCaptureAutomationScreenshotLocal(LocalTestStep localStep) {
         if (!stepScreenshotCaptureEnabled || localStep == null) {
             return;
@@ -1340,6 +1453,7 @@ public class MervJUnitHandler implements BeforeAllCallback, AfterAllCallback, Be
         private String prereq;
         private List<String> screenshots;
         private List<String> logs;
+        private List<MervTestDataFileHtml.AttachedFile> attachedFiles;
 
         public UUID getId() { return id; }
         public void setId(UUID id) { this.id = id; }
@@ -1367,6 +1481,10 @@ public class MervJUnitHandler implements BeforeAllCallback, AfterAllCallback, Be
         public void setScreenshots(List<String> screenshots) { this.screenshots = screenshots; }
         public List<String> getLogs() { return logs; }
         public void setLogs(List<String> logs) { this.logs = logs; }
+        public List<MervTestDataFileHtml.AttachedFile> getAttachedFiles() { return attachedFiles; }
+        public void setAttachedFiles(List<MervTestDataFileHtml.AttachedFile> attachedFiles) {
+            this.attachedFiles = attachedFiles;
+        }
     }
 }
 

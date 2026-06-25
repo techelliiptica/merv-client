@@ -1,8 +1,11 @@
 package org.teche.merv.client.plugin;
 
+import org.teche.merv.client.dto.FileType;
 import org.teche.merv.client.dto.StepType;
 import org.teche.merv.client.dto.TestStepResponse;
 import org.teche.merv.client.exception.MervClientException;
+
+import java.io.File;
 
 /**
  * Shared step APIs usable from any runner plugin (Cucumber, TestNG, ...).
@@ -66,6 +69,25 @@ public final class MervPluginSteps {
         return addStep(stepName, StepType.TESTDATA.getValue(), null, null, testdata, null);
     }
 
+    /** TEST_DATA row with a file attachment. */
+    public static TestStepResponse data(
+            String stepName,
+            File file,
+            FileType fileType,
+            String prereq) throws MervClientException {
+        Adapter adapter = ADAPTER.get();
+        if (adapter == null) {
+            throw new MervClientException(
+                    "No active Merv plugin context. Call step APIs during an active test execution.");
+        }
+        MervPluginFileDataSupport.validate(stepName, file);
+        if (adapter.isLocalMode()) {
+            adapter.addLocalFileStep(stepName, file, fileType, prereq);
+            return null;
+        }
+        return adapter.addServerFileStep(stepName, file, fileType, prereq);
+    }
+
     /** ASSERTION row (same as JS {@code MervPlaywrightHandler.validation}). */
     public static TestStepResponse validation(
             String stepName,
@@ -122,6 +144,10 @@ public final class MervPluginSteps {
         boolean isLocalMode();
         void addLocalStep(StepPayload payload) throws MervClientException;
         TestStepResponse addServerStep(StepPayload payload) throws MervClientException;
+        void addLocalFileStep(String stepName, File file, FileType fileType, String prereq)
+                throws MervClientException;
+        TestStepResponse addServerFileStep(String stepName, File file, FileType fileType, String prereq)
+                throws MervClientException;
     }
 
     static final class StepPayload {

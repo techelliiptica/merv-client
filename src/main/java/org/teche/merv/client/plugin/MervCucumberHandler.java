@@ -6,6 +6,7 @@ import org.teche.merv.client.MervClient;
 import org.teche.merv.client.config.MervConfig;
 import org.teche.merv.client.dto.*;
 import org.teche.merv.client.exception.MervClientException;
+import org.teche.merv.client.utils.MervPropertyFlags;
 import org.teche.merv.client.utils.FileUtils;
 import org.teche.merv.client.utils.ReportsDeleteServer;
 import org.teche.merv.client.report.html.MervHtmlEscape;
@@ -13,6 +14,7 @@ import org.teche.merv.client.report.html.MervReportBranding;
 import org.teche.merv.client.report.html.MervConsolidatedFailureReasonsWriter;
 import org.teche.merv.client.report.html.MervFailureTestJsonWriter;
 import org.teche.merv.client.report.html.MervReportsIndexHtmlWriter;
+import org.teche.merv.client.report.html.MervTestDataFileHtml;
 
 import java.io.File;
 import java.io.FileInputStream;
@@ -150,7 +152,7 @@ public class MervCucumberHandler implements ConcurrentEventListener {
             }
             mervProp.load(new FileInputStream(merv_property));
             sharedMervProps = mervProp;
-            stepScreenshotCaptureEnabled = readScreenshotEnabledFromProperties(mervProp);
+            stepScreenshotCaptureEnabled = MervPropertyFlags.isScreenshotEnabled(mervProp);
 
             if (!isMervEnabled()) {
                 // Initialize local test suite storage
@@ -306,6 +308,44 @@ public class MervCucumberHandler implements ConcurrentEventListener {
                     }
                 }
                 return created;
+            }
+
+            @Override
+            public void addLocalFileStep(String stepName, File file, FileType fileType, String prereq)
+                    throws MervClientException {
+                UUID testCaseId = getActiveTestCaseId();
+                if (testCaseId == null) {
+                    throw new MervClientException(
+                            "No active test case found. Step creation must be called during an active test case execution.");
+                }
+                LocalTestStep localStep = new LocalTestStep();
+                localStep.setId(UUID.randomUUID());
+                localStep.setTeststepName(stepName);
+                localStep.setStepType(StepType.TESTDATA.getApiValue());
+                localStep.setStatus("PASSED");
+                localStep.setStartTime(new Date());
+                localStep.setPrereq(prereq);
+                List<MervTestDataFileHtml.AttachedFile> attached =
+                        MervPluginFileDataSupport.saveAttachedFiles(file, currentReportFolderPath);
+                if (attached != null) {
+                    localStep.setAttachedFiles(attached);
+                } else {
+                    localStep.setTestdata(MervPluginFileDataSupport.fallbackTestdata(file, fileType));
+                }
+                if (localTestCases.containsKey(testCaseId)) {
+                    localTestCases.get(testCaseId).getTestSteps().add(localStep);
+                }
+                localTestSteps.put(localStep.getId(), localStep);
+            }
+
+            @Override
+            public org.teche.merv.client.dto.TestStepResponse addServerFileStep(
+                    String stepName,
+                    File file,
+                    FileType fileType,
+                    String prereq) throws MervClientException {
+                return MervPluginFileDataSupport.createServerFileStep(
+                        sharedClient, getActiveTestCaseId(), stepName, file, fileType, prereq);
             }
         });
     }
@@ -803,75 +843,7 @@ public class MervCucumberHandler implements ConcurrentEventListener {
             File file,
             org.teche.merv.client.dto.FileType fileType,
             String prereq) throws MervClientException {
-        if (!isMervEnabled()) {
-            // Local mode: just record file metadata in testdata.
-            UUID testCaseId = getActiveTestCaseId();
-            if (testCaseId == null) {
-                throw new MervClientException("No active test case found. Step creation must be called during an active test case execution.");
-            }
-            if (stepName == null || stepName.trim().isEmpty()) {
-                throw new MervClientException("Step name is required and cannot be empty.");
-            }
-            if (file == null || !file.exists()) {
-                throw new MervClientException("File does not exist: " + (file != null ? file.getPath() : "null"));
-            }
-            LocalTestStep localStep = new LocalTestStep();
-            localStep.setId(UUID.randomUUID());
-            localStep.setTeststepName(stepName);
-            localStep.setStepType("TEST_DATA");
-            localStep.setStatus("PASSED");
-            localStep.setStartTime(new Date());
-            localStep.setTestdata("File: " + file.getName() + " (Type: " + (fileType != null ? fileType.getType() : "unknown") + ")");
-            localStep.setPrereq(prereq);
-            if (localTestCases.containsKey(testCaseId)) {
-                localTestCases.get(testCaseId).getTestSteps().add(localStep);
-            }
-            localTestSteps.put(localStep.getId(), localStep);
-            return null;
-        }
-
-        MervClient client = sharedClient;
-        UUID testCaseId = getActiveTestCaseId();
-
-        if (client == null) {
-            throw new MervClientException("MervClient is not initialized. Make sure MervCucumberHandler is properly configured.");
-        }
-
-        if (testCaseId == null) {
-            throw new MervClientException("No active test case found. Step creation must be called during an active test case execution.");
-        }
-
-        if (stepName == null || stepName.trim().isEmpty()) {
-            throw new MervClientException("Step name is required and cannot be empty.");
-        }
-
-        if (file == null || !file.exists()) {
-            throw new MervClientException("File does not exist: " + (file != null ? file.getPath() : "null"));
-        }
-
-        // Create test step request with file name in testdata field
-        org.teche.merv.client.dto.TestStepRequest request = new org.teche.merv.client.dto.TestStepRequest();
-        request.setTeststepName(stepName);
-        request.setTestcaseId(testCaseId);
-        request.setStepType("TEST_DATA");
-        request.setStatus("PENDING");
-        request.setTestdata("File: " + file.getName() + " (Type: " + (fileType != null ? fileType.getType() : "unknown") + ")");
-        if (prereq != null) {
-            request.setPrereq(prereq);
-        }
-
-        // Create the step first
-        org.teche.merv.client.dto.TestStepResponse stepResponse = client.createTestStep(request);
-
-        // Attach the file to the step
-        try {
-            client.uploadFile(stepResponse.getId(), file, "Test data file");
-        } catch (MervClientException e) {
-            // If file upload fails, log but don't fail the step creation
-            System.err.println("Warning: Failed to attach file to test step: " + e.getMessage());
-        }
-
-        return stepResponse;
+        return MervPluginSteps.data(stepName, file, fileType, prereq);
     }
 
     /** @deprecated Use {@link #data(String, File, org.teche.merv.client.dto.FileType, String)}. */
@@ -1123,7 +1095,7 @@ public class MervCucumberHandler implements ConcurrentEventListener {
 
     /**
      * Registers the automation driver/page used for optional per-step screenshots when
-     * {@code merv.screenshot=on} (or {@code screenshot=on}) is set in {@code merv.properties}.
+     * {@code merv.screenshot=true} (legacy {@code on}, {@code yes}, {@code 1}; or {@code screenshot=true}) is set in {@code merv.properties}.
      * Use {@link AutomationTool#AUTO} if unsure; capture uses Selenium-style or Playwright APIs reflectively.
      * <p>
      * Typical usage: call from a {@code Before} hook per thread; pass {@code null} for the tool to clear.
@@ -1141,22 +1113,6 @@ public class MervCucumberHandler implements ConcurrentEventListener {
         threadLocalAutomationTool.set(automationToolName);
         threadLocalAutomationDriver.set(driverObject);
     }
-
-    private static boolean readScreenshotEnabledFromProperties(Properties p) {
-        if (p == null) {
-            return false;
-        }
-        String v = p.getProperty("merv.screenshot");
-        if (v == null) {
-            v = p.getProperty("screenshot");
-        }
-        if (v == null) {
-            return false;
-        }
-        v = v.trim().toLowerCase(Locale.ROOT);
-        return "on".equals(v) || "true".equals(v) || "yes".equals(v) || "1".equals(v);
-    }
-
     private static void tryCaptureAutomationScreenshotLocal(LocalTestStep localStep) {
         if (!stepScreenshotCaptureEnabled || localStep == null) {
             return;
@@ -1289,7 +1245,8 @@ public class MervCucumberHandler implements ConcurrentEventListener {
         html.append(".sidebar{width:400px;background:var(--sidebar-bg);color:var(--nav-text);padding:20px 16px;overflow-y:auto;position:fixed;height:100vh;box-shadow:1px 0 0 var(--sidebar-border);box-sizing:border-box;}");
         html.append(".sidebar-brand{margin-bottom:20px;padding-bottom:18px;border-bottom:1px solid var(--sidebar-border);text-align:center;}");
         html.append(".brand-logo{max-width:180px;height:auto;display:block;margin:0 auto;}");
-        html.append(".sidebar-local-label{margin:12px 0 0;padding:0;font-size:13px;font-weight:700;color:var(--nav-active-text);letter-spacing:.04em;text-align:center;}");
+        html.append(".sidebar-local-label{margin:12px 0 0;padding:0;font-size:13px;font-weight:700;color:var(--nav-active-text);letter-spacing:.04em;text-align:center;display:block;text-decoration:none;cursor:pointer;}");
+        html.append(".sidebar-local-label:hover{color:#c20000;text-decoration:underline;text-underline-offset:2px;}");
         html.append(".sidebar-search{margin-bottom:16px;}");
         html.append(".sidebar-search input{width:100%;padding:10px 12px;border:1px solid #ddd;border-radius:6px;background:#fff;color:#333;font-size:14px;box-sizing:border-box;}");
         html.append(".sidebar-search input::placeholder{color:#999;}.sidebar-search input:focus{outline:2px solid rgba(233,1,1,.25);border-color:#e90101;}");
@@ -1418,6 +1375,11 @@ public class MervCucumberHandler implements ConcurrentEventListener {
         html.append(".test-step{margin:8px 0;padding:8px;background-color:#fff;border-radius:3px;color:#333;}.test-step.passed{border-left:3px solid #4CAF50;}.test-step.failed{border-left:3px solid #f44336;}.test-step.skipped{border-left:3px solid #FF9800;}.test-step.in_progress{border-left:3px solid #ffc107;}");
         html.append(".test-step-hd{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin:0 0 6px;flex-wrap:wrap;}");
         html.append(".test-step-title{margin:0;flex:1;min-width:0;font-size:14px;font-weight:600;color:#333;line-height:1.35;word-break:break-word;}");
+        html.append(".test-step-title.has-shot{cursor:pointer;}.test-step-title.has-shot:hover,.test-step-title.has-shot.shots-open{color:#c20000;}");
+        html.append(".test-step-title .step-shot-icon{margin-right:6px;opacity:.85;font-size:13px;}");
+        html.append(".test-step-hd.has-shot-hd{cursor:pointer;}.test-step-hd.has-shot-hd:hover .test-step-title.has-shot{color:#c20000;}");
+        html.append(".step-screenshots{display:none;margin-top:8px;}.step-screenshots.open{display:block !important;}");
+        html.append("body.hide-shots .step-screenshots.open{display:block !important;}");
         html.append(".test-step-badges{display:inline-flex;align-items:center;gap:10px;flex-shrink:0;margin-left:auto;}");
         html.append(".step-type-pill{display:inline-flex;align-items:center;padding:3px 10px;border-radius:999px;font-size:10px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;border:1px solid #d0d7de;background:#eef2f6;color:#364152;white-space:nowrap;}");
         html.append(".step-type-pill.data{background:#eaf1ff;color:#153a7a;border-color:#cfdcff;}.step-type-pill.assert{background:#fff0f0;color:#8a1f1f;border-color:#ffd4d4;}.step-type-pill.info{background:#f3f4f6;color:#374151;border-color:#e5e7eb;}");
@@ -1425,10 +1387,12 @@ public class MervCucumberHandler implements ConcurrentEventListener {
         html.append(".step-meta-row{display:flex;gap:10px;align-items:flex-start;flex-wrap:wrap;margin:2px 0;}");
         html.append(".step-meta-key{min-width:88px;font-weight:700;color:#555;text-transform:uppercase;letter-spacing:.06em;font-size:10px;}");
         html.append(".step-meta-val{flex:1;min-width:0;color:#222;white-space:pre-wrap;word-break:break-word;}");
+        MervTestDataFileHtml.appendStyles(html);
         html.append(".step-status-pill{display:inline-flex;align-items:center;padding:3px 10px;border-radius:999px;font-size:10px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;border:1px solid #d0d7de;background:#eef2f6;color:#364152;white-space:nowrap;}");
         html.append(".step-status-pill.passed{background:#e8f5e9;color:#1b5e20;border-color:#c8e6c9;}");
         html.append(".step-status-pill.failed{background:#ffebee;color:#b71c1c;border-color:#ffcdd2;}");
         html.append(".step-status-pill.skipped{background:#fff8e1;color:#e65100;border-color:#ffe0b2;}");
+        html.append(".step-status-pill.data{display:none;}");
         html.append(".step-status-pill.in_progress{background:#fff8e1;color:#f57f17;border-color:#ffe082;}");
         html.append(".step-delta{font-size:12px;font-weight:600;color:#5c5f66;font-variant-numeric:tabular-nums;min-width:6.5em;text-align:right;white-space:nowrap;}");
         html.append(".error{color:#f44336;font-size:.9em;margin-top:5px;background-color:#ffebee;padding:8px;border-radius:3px;border-left:3px solid #f44336;}");
@@ -1448,7 +1412,7 @@ public class MervCucumberHandler implements ConcurrentEventListener {
         html.append(".sidebar-item-tags{display:flex;flex-wrap:wrap;gap:4px;margin-top:4px;}.sidebar-tag-pill{font-size:10px;padding:2px 6px;border-radius:999px;background:#eaf1ff;border:1px solid #cfdcff;color:#153a7a;}");
         html.append("</style></head><body>");
         html.append("<div class='main-wrapper'><div class='sidebar'>");
-        html.append("<div class='sidebar-brand'><img class='brand-logo' src='").append(MervReportBranding.LOGO_URL).append("' alt='Merv'><p class='sidebar-local-label'>Merv Local</p></div>");
+        html.append("<div class='sidebar-brand'><img class='brand-logo' src='").append(MervReportBranding.LOGO_URL).append("' alt='Merv'><a class='sidebar-local-label' href='../../index.html' title='Open local dashboard'>Merv Local</a></div>");
         html.append("<div class='sidebar-filters-wrap' id='sidebar-filters-wrap'>");
         html.append("<div class='sidebar-filters' role='group' aria-label='Filter by status'>");
         html.append("<button type='button' class='filter-btn active' data-status='all'>All</button>");
@@ -1490,7 +1454,7 @@ public class MervCucumberHandler implements ConcurrentEventListener {
         html.append("<script>");
         html.append("function e(s){return String(s||'').replace(/[&<>\\\"']/g,function(c){return({'&':'&amp;','<':'&lt;','>':'&gt;','\\\"':'&quot;',\"'\":'&#39;'})[c];});}");
         html.append("function c(v){return String(v||'').toLowerCase();}");
-        html.append("var currentFilter='all';var currentSearch='';var suiteAdvSelectedTags={};var suiteStatusFilters={passed:true,failed:true,skipped:true,in_progress:true};var SUITE_TAG_PANEL_KEY='merv.suite.tagPanel.open';var selectedId='';var latestData=null;var pollTimer=null;var requestedTestcaseName=(function(){try{return (new URLSearchParams(window.location.search).get('testcase')||'').trim().toLowerCase();}catch(e){return'';}})();var appliedRequestedCase=false;");
+        html.append("var currentFilter='all';var currentSearch='';var suiteAdvSelectedTags={};var suiteStatusFilters={passed:true,failed:true,skipped:true,in_progress:true};var SUITE_TAG_PANEL_KEY='merv.suite.tagPanel.open';var selectedId='';var openStepShots={};var latestData=null;var pollTimer=null;var requestedTestcaseName=(function(){try{return (new URLSearchParams(window.location.search).get('testcase')||'').trim().toLowerCase();}catch(e){return'';}})();var appliedRequestedCase=false;");
         html.append("function decodeUi(s){if(s==null)return'';try{return decodeURIComponent(String(s));}catch(e){return String(s);}}");
         html.append("function detectReportFolderName(){try{var p=String(window.location.pathname||'').replace(/\\\\/g,'/');var parts=p.split('/').filter(function(x){return x&&x!=='.';});var htmlIdx=parts.lastIndexOf('html');if(htmlIdx>0)return decodeUi(parts[htmlIdx-1]);if(parts.length>1)return decodeUi(parts[parts.length-2]);if(parts.length)return decodeUi(parts[0]);}catch(e){}return'—';}");
         html.append("(function renderFolderMeta(){var el=document.getElementById('report-folder');if(!el)return;el.innerHTML='<strong>Folder name:</strong> '+e(detectReportFolderName());})();");
@@ -1503,7 +1467,7 @@ public class MervCucumberHandler implements ConcurrentEventListener {
         html.append("function fmtStepDelta(ms){if(ms==null||ms<0||isNaN(ms))return'\u2014';var s=Math.floor(ms/1000);var m=Math.floor(ms%1000);return s+'s '+m+'ms';}");
         html.append("function stepSuiteRunning(){try{return !!(latestData&&latestData.running===true&&!isStaleAborted(latestData));}catch(e){return false;}}");
         html.append("function hasPriorFailedStep(steps,si){return false;}");
-        html.append("function stepRowUi(step){var raw=c(step&&step.status||'');var end=parseTs(step&&step.endTime);if(raw==='pending')return{p:'SKIP',k:'skipped'};if(raw==='skipped')return{p:'SKIP',k:'skipped'};if(raw==='passed')return{p:'PASS',k:'passed'};if(raw==='failed')return{p:'FAIL',k:'failed'};if(raw==='in_progress'){if(!end&&!stepSuiteRunning())return{p:'SKIP',k:'skipped'};return{p:'IN PROGRESS',k:'in_progress'};}if(!raw)return{p:'SKIP',k:'skipped'};return{p:'SKIP',k:'skipped'};}");
+        html.append("function stepRowUi(step){var ty=stepTypeClass(step);if(ty&&ty.cls==='data')return{p:'',k:'data'};var raw=c(step&&step.status||'');var end=parseTs(step&&step.endTime);if(raw==='pending')return{p:'SKIP',k:'skipped'};if(raw==='skipped')return{p:'SKIP',k:'skipped'};if(raw==='passed')return{p:'PASS',k:'passed'};if(raw==='failed')return{p:'FAIL',k:'failed'};if(raw==='in_progress'){if(!end&&!stepSuiteRunning())return{p:'SKIP',k:'skipped'};return{p:'IN PROGRESS',k:'in_progress'};}if(!raw)return{p:'SKIP',k:'skipped'};return{p:'SKIP',k:'skipped'};}");
         html.append("function drawPieChart(passed,failed,skipped){var canvas=document.getElementById('pieChart');if(!canvas)return;var ctx=canvas.getContext('2d');var w=canvas.width,h=canvas.height,cx=w/2,cy=h/2,r=Math.min(w,h)*0.36;ctx.clearRect(0,0,w,h);var total=passed+failed+skipped;if(total===0){ctx.fillStyle='#eee';ctx.beginPath();ctx.arc(cx,cy,r,0,2*Math.PI);ctx.fill();return;}var start=-Math.PI/2;var pa=(passed/total)*2*Math.PI,fa=(failed/total)*2*Math.PI,ka=(skipped/total)*2*Math.PI;if(passed>0){ctx.beginPath();ctx.moveTo(cx,cy);ctx.arc(cx,cy,r,start,start+pa);ctx.closePath();ctx.fillStyle='#4CAF50';ctx.fill();start+=pa;}if(failed>0){ctx.beginPath();ctx.moveTo(cx,cy);ctx.arc(cx,cy,r,start,start+fa);ctx.closePath();ctx.fillStyle='#f44336';ctx.fill();start+=fa;}if(skipped>0){ctx.beginPath();ctx.moveTo(cx,cy);ctx.arc(cx,cy,r,start,start+ka);ctx.closePath();ctx.fillStyle='#FF9800';ctx.fill();}ctx.beginPath();ctx.arc(cx,cy,r,0,2*Math.PI);ctx.strokeStyle='#fff';ctx.lineWidth=2;ctx.stroke();}");
         html.append("function toggleChartBlock(){var body=document.getElementById('chart-block-body');var head=document.getElementById('chart-block-head');if(!body||!head)return;var collapsed=body.classList.toggle('collapsed');head.classList.toggle('collapsed',collapsed);head.setAttribute('aria-expanded',collapsed?'false':'true');if(!collapsed&&typeof drawPieChart==='function'&&latestData&&latestData.testSuite){var tc=latestData.testSuite.testCases||[],p=0,f=0,k=0;tc.forEach(function(t){if(t.status==='PASSED')p++;else if(t.status==='FAILED')f++;else if(t.status==='SKIPPED')k++;});drawPieChart(p,f,k);}}");
         html.append("function parseTs(v){if(v==null||v===undefined)return null;if(typeof v==='number'){var n=v;return new Date(n>1e11?n:n*1000);}if(typeof v==='string'){var s=new Date(v);return isNaN(s.getTime())?null:s;}if(typeof v==='object'&&v){if(typeof v.time==='number')return new Date(v.time);if(Array.isArray(v)&&v.length>=3)return new Date(v[0],(v[1]||1)-1,v[2]||1,v[3]||0,v[4]||0,v[5]||0);}var t=new Date(v);return isNaN(t.getTime())?null:t;}");
@@ -1517,8 +1481,19 @@ public class MervCucumberHandler implements ConcurrentEventListener {
         html.append("h+='<div class=\"cons-fail-panel\"><div class=\"cons-fail-head\" id=\"cons-fail-head\" role=\"button\" tabindex=\"0\"><div class=\"cons-fail-title\">Consolidated failure reasons (latest)</div><div class=\"cons-fail-caret\" id=\"cons-fail-caret\" aria-hidden=\"true\">&#9660;</div></div><div class=\"cons-fail-body\" id=\"cons-fail-body\"><p class=\"failure-reason-empty\">Loading…</p></div></div>';panel.innerHTML=h;panel.querySelectorAll('.failure-case-link[data-case-id]').forEach(function(btn){btn.addEventListener('click',function(){var cid=btn.getAttribute('data-case-id');if(!cid)return;selectedId=cid;renderSelectedCase((latestData&&latestData.testSuite&&latestData.testSuite.testCases)||[]);renderSidebar((latestData&&latestData.testSuite&&latestData.testSuite.testCases)||[]);setTimeout(scrollToTestcasePanel,0);});});initConsolidatedFailuresToggle();loadConsolidatedFailures();}");
         html.append("function renderSidebar(testCases){var h='';testCases.forEach(function(t,i){var id='tc-'+i;var cls=statusClass(t.status);var tg=statusTag(t.status);var tagAttr=(t.tags&&t.tags.length)?t.tags.map(function(x){return String(x||'').trim();}).filter(Boolean).join('|'):'';var tagHtml='';if(t.tags&&t.tags.length){var pills='';t.tags.forEach(function(tag){pills+='<span class=\"sidebar-tag-pill\">'+e(tag)+'</span>';});tagHtml='<div class=\"sidebar-item-tags\">'+pills+'</div>';}h+='<div class=\"sidebar-item '+cls+(selectedId===id?' active':'')+'\" data-id=\"'+id+'\" data-status=\"'+cls+'\" data-tags=\"'+e(tagAttr)+'\"><div class=\"sidebar-item-top\"><div class=\"sidebar-item-name\">'+e(t.testcaseName||'N/A')+'</div><span class=\"sidebar-status-tag '+tg.cls+'\">'+tg.txt+'</span></div>'+tagHtml+'</div>';});document.getElementById('sidebar-list').innerHTML=h;bindSidebarEvents();applySidebarFilters();}");
         html.append("function stepTypeClass(st){var t=String((st&&st.stepType)||'').toUpperCase();if(t.indexOf('DATA')>=0)return{txt:'DATA',cls:'data'};if(t.indexOf('ASSERT')>=0)return{txt:'ASSERT',cls:'assert'};if(t.indexOf('PREREQ')>=0||t.indexOf('INFO')>=0||t.indexOf('INFORMATION')>=0)return{txt:'INFO',cls:'info'};if(t.indexOf('CONFIG')>=0)return{txt:'CONFIG',cls:'info'};if(t.indexOf('CUSTOM')>=0)return{txt:'CUSTOM',cls:'info'};return null;}");
-        html.append("function addMetaRows(st){var rows='';function row(k,v,showKey){if(v==null)return;var s=String(v);if(!s.trim())return;var keyHtml=(showKey===false)?'':('<div class=\"step-meta-key\">'+e(k)+'</div>');rows+='<div class=\"step-meta-row\">'+keyHtml+'<div class=\"step-meta-val\">'+e(s)+'</div></div>';}\nrow('Expected',st.expected,true);\nrow('Actual',st.actual,true);\nrow('Data',st.testdata,false);\nrow('Info',st.prereq,true);\nreturn rows?('<div class=\"step-meta\">'+rows+'</div>'):'';}");
-        html.append("function renderSelectedCase(testCases){if(!testCases.length){document.getElementById('testcase-content').innerHTML='<p>No runtime data yet.</p>';return;}if(!selectedId||!document.querySelector('[data-id=\"'+selectedId+'\"]')){selectedId='tc-0';}var idx=parseInt(selectedId.replace('tc-',''),10);var t=testCases[idx]||testCases[0];var cls=statusClass(t.status);var statusText=String(t.status||'IN_PROGRESS').replace(/_/g,' ');var st=parseTs(t.startTime),et=parseTs(t.endTime),dur='0m:0s:0ms';if(st&&et&&et.getTime()>=st.getTime()){var ms=et.getTime()-st.getTime();var min=Math.floor(ms/60000),sec=Math.floor((ms%60000)/1000),msec=ms%1000;dur=min+'m:'+sec+'s:'+msec+'ms';}var tags=(t.tags&&t.tags.length)?t.tags.join(', '):'N/A';var machine=t.executionMachine||'N/A';var h='<div class=\"test-case '+cls+'\">';h+='<div class=\"testcase-heading\"><h3 class=\"testcase-title\">'+e(t.testcaseName||'N/A')+'</h3><span class=\"testcase-status-chip '+cls+'\">'+e(statusText)+'</span></div>';h+='<div class=\"testcase-meta-grid\">';h+='<div class=\"testcase-meta-item\"><span class=\"testcase-meta-label\">Status</span><span class=\"testcase-meta-value\">'+e(statusText)+'</span></div>';h+='<div class=\"testcase-meta-item\"><span class=\"testcase-meta-label\">Total time taken</span><span class=\"testcase-meta-value\">'+e(dur)+'</span></div>';h+='<div class=\"testcase-meta-item\"><span class=\"testcase-meta-label\">Executed on machine</span><span class=\"testcase-meta-value\">'+e(machine)+'</span></div>';h+='</div>';if(t.tags&&t.tags.length){h+='<div><strong>Tags:</strong></div>';h+='<div class=\"testcase-tags\">';t.tags.forEach(function(tag){h+='<span class=\"testcase-tag\">'+e(tag)+'</span>';});h+='</div>';}if(t.failureReason){h+='<div class=\"error\"><strong>Error:</strong> '+e(t.failureReason)+'</div>';}var steps=t.testSteps||[];var caseSt=parseTs(t.startTime);var prevEnd=null;if(steps.length){h+='<h4>Test Steps:</h4>';steps.forEach(function(st,si){var priorFail=hasPriorFailedStep(steps,si);var su=priorFail?{p:'SKIP',k:'skipped'}:stepRowUi(st);var sc=su.k;var pillTxt=su.p;var end=parseTs(st.endTime);var deltaMs=null;if(!priorFail){if(end){if(si===0&&caseSt){deltaMs=end.getTime()-caseSt.getTime();}else if(prevEnd){deltaMs=end.getTime()-prevEnd.getTime();}prevEnd=end;}else if(sc==='in_progress'){var nowMs=Date.now();if(si===0&&caseSt){deltaMs=nowMs-caseSt.getTime();}else if(prevEnd){deltaMs=nowMs-prevEnd.getTime();}else if(caseSt){deltaMs=nowMs-caseSt.getTime();}}}var timeLbl=fmtStepDelta(deltaMs);var ty=stepTypeClass(st);h+='<div class=\"test-step '+sc+'\"><div class=\"test-step-hd\"><p class=\"test-step-title\">'+e(st.teststepName||'Step')+'</p><div class=\"test-step-badges\">'+(ty?('<span class=\"step-type-pill '+ty.cls+'\">'+ty.txt+'</span>'):'')+'<span class=\"step-status-pill '+sc+'\">'+pillTxt+'</span><span class=\"step-delta\">'+timeLbl+'</span></div></div>';if(st.errorMessage){h+='<div class=\"error\">'+e(st.errorMessage)+'</div>';}h+=addMetaRows(st);if(st.screenshots&&st.screenshots.length){h+='<div class=\"screenshots\"><p><strong>Screenshots:</strong></p>';st.screenshots.forEach(function(ss){var p=('../'+String(ss||'')).replace(/\\\\/g,'/');h+='<div class=\"screenshot\"><img src=\"'+e(p)+'\" alt=\"Screenshot\" onclick=\"window.open(this.src,\\'_blank\\')\"><p style=\"font-size:.85em;color:#666;\">'+e(ss)+'</p></div>';});h+='</div>';}h+='</div>';});}h+='</div>';document.getElementById('testcase-content').innerHTML=h;}");
+        html.append("function addMetaRows(st){var rows='';function row(k,v,showKey){if(v==null)return;var s=String(v);if(!s.trim())return;var keyHtml=(showKey===false)?'':('<div class=\"step-meta-key\">'+e(k)+'</div>');rows+='<div class=\"step-meta-row\">'+keyHtml+'<div class=\"step-meta-val\">'+e(s)+'</div></div>';}\nrow('Expected',st.expected,true);\nrow('Actual',st.actual,true);\nvar hasFiles=st.attachedFiles&&st.attachedFiles.length;if(!hasFiles)row('Data',st.testdata,false);\nrow('Info',st.prereq,true);\nreturn rows?('<div class=\"step-meta\">'+rows+'</div>'):'';}");
+        MervTestDataFileHtml.appendScriptHelpers(html);
+        html.append("function stepShotKey(caseId,stepIdx){return String(caseId||'')+'|'+String(stepIdx==null?'':stepIdx);}");
+        html.append("function stepHasScreenshots(st){return!!(st&&st.screenshots&&st.screenshots.length);}");
+        html.append("function renderStepTitleHtml(st,stepIdx){var nm=e(st.teststepName||'Step');if(!stepHasScreenshots(st))return '<p class=\"test-step-title\">'+nm+'</p>';return '<p class=\"test-step-title has-shot\" data-step-idx=\"'+stepIdx+'\" role=\"button\" tabindex=\"0\" title=\"Click to show/hide screenshot\"><span class=\"step-shot-icon\" aria-hidden=\"true\">&#128247;</span>'+nm+'</p>';}");
+        html.append("function renderStepScreenshotsBlock(st){if(!stepHasScreenshots(st))return '';var h='<div class=\"step-screenshots\">';(st.screenshots||[]).forEach(function(ss){var p=('../'+String(ss||'')).replace(/\\\\/g,'/');h+='<div class=\"screenshot\"><img src=\"'+e(p)+'\" alt=\"Screenshot\" onclick=\"window.open(this.src,\\'_blank\\')\"></div>';});return h+'</div>';}");
+        html.append("function ensureShotsToolbarOn(){var cb=document.getElementById('toggle-shots');if(!cb||cb.checked)return;cb.checked=true;document.body.classList.remove('hide-shots');try{localStorage.setItem('merv.showScreenshots','1');}catch(ex){}}");
+        html.append("function restoreOpenStepScreenshots(){var root=document.getElementById('testcase-content');if(!root||!selectedId)return;root.querySelectorAll('.test-step[data-step-idx]').forEach(function(stepEl){var idx=stepEl.getAttribute('data-step-idx');if(idx==null)return;if(!openStepShots[stepShotKey(selectedId,idx)])return;var shots=stepEl.querySelector('.step-screenshots');var title=stepEl.querySelector('.test-step-title');if(shots)shots.classList.add('open');if(title)title.classList.add('shots-open');});}");
+        html.append("function toggleStepScreenshots(titleEl){var step=titleEl.closest('.test-step');if(!step)return;var shots=step.querySelector('.step-screenshots');if(!shots)return;var idx=step.getAttribute('data-step-idx');shots.classList.toggle('open');var open=shots.classList.contains('open');if(open)ensureShotsToolbarOn();var title=step.querySelector('.test-step-title');if(title)title.classList.toggle('shots-open',open);var key=stepShotKey(selectedId,idx);if(open)openStepShots[key]=true;else delete openStepShots[key];}");
+        html.append("function stepShotClickTarget(el){if(!el||!el.closest)return null;if(el.closest('a,button,input,textarea,select,.testdata-flat-file-link,.testdata-image-file-preview,.merv-zoomable-image,.step-screenshots img'))return null;var step=el.closest('.test-step[data-step-idx]');if(!step||!step.querySelector('.step-screenshots'))return null;var hd=el.closest('.test-step-hd.has-shot-hd');if(!hd||!step.contains(hd))return null;return step.querySelector('.test-step-title')||hd;}");
+        html.append("document.addEventListener('click',function(ev){var t=stepShotClickTarget(ev.target);if(!t)return;ev.preventDefault();toggleStepScreenshots(t);});");
+        html.append("document.addEventListener('keydown',function(ev){if(ev.key!=='Enter'&&ev.key!==' ')return;var t=stepShotClickTarget(ev.target);if(!t)return;ev.preventDefault();toggleStepScreenshots(t);});");
+        html.append("function renderSelectedCase(testCases){if(!testCases.length){document.getElementById('testcase-content').innerHTML='<p>No runtime data yet.</p>';return;}if(!selectedId||!document.querySelector('[data-id=\"'+selectedId+'\"]')){selectedId='tc-0';}var idx=parseInt(selectedId.replace('tc-',''),10);var t=testCases[idx]||testCases[0];var cls=statusClass(t.status);var statusText=String(t.status||'IN_PROGRESS').replace(/_/g,' ');var st=parseTs(t.startTime),et=parseTs(t.endTime),dur='0m:0s:0ms';if(st&&et&&et.getTime()>=st.getTime()){var ms=et.getTime()-st.getTime();var min=Math.floor(ms/60000),sec=Math.floor((ms%60000)/1000),msec=ms%1000;dur=min+'m:'+sec+'s:'+msec+'ms';}var tags=(t.tags&&t.tags.length)?t.tags.join(', '):'N/A';var machine=t.executionMachine||'N/A';var h='<div class=\"test-case '+cls+'\">';h+='<div class=\"testcase-heading\"><h3 class=\"testcase-title\">'+e(t.testcaseName||'N/A')+'</h3><span class=\"testcase-status-chip '+cls+'\">'+e(statusText)+'</span></div>';h+='<div class=\"testcase-meta-grid\">';h+='<div class=\"testcase-meta-item\"><span class=\"testcase-meta-label\">Status</span><span class=\"testcase-meta-value\">'+e(statusText)+'</span></div>';h+='<div class=\"testcase-meta-item\"><span class=\"testcase-meta-label\">Total time taken</span><span class=\"testcase-meta-value\">'+e(dur)+'</span></div>';h+='<div class=\"testcase-meta-item\"><span class=\"testcase-meta-label\">Executed on machine</span><span class=\"testcase-meta-value\">'+e(machine)+'</span></div>';h+='</div>';if(t.tags&&t.tags.length){h+='<div><strong>Tags:</strong></div>';h+='<div class=\"testcase-tags\">';t.tags.forEach(function(tag){h+='<span class=\"testcase-tag\">'+e(tag)+'</span>';});h+='</div>';}if(t.failureReason){h+='<div class=\"error\"><strong>Error:</strong> '+e(t.failureReason)+'</div>';}var steps=t.testSteps||[];var caseSt=parseTs(t.startTime);var prevEnd=null;if(steps.length){h+='<h4>Test Steps:</h4>';steps.forEach(function(st,si){var priorFail=hasPriorFailedStep(steps,si);var su=priorFail?{p:'SKIP',k:'skipped'}:stepRowUi(st);var sc=su.k;var pillTxt=su.p;var end=parseTs(st.endTime);var deltaMs=null;if(!priorFail){if(end){if(si===0&&caseSt){deltaMs=end.getTime()-caseSt.getTime();}else if(prevEnd){deltaMs=end.getTime()-prevEnd.getTime();}prevEnd=end;}else if(sc==='in_progress'){var nowMs=Date.now();if(si===0&&caseSt){deltaMs=nowMs-caseSt.getTime();}else if(prevEnd){deltaMs=nowMs-prevEnd.getTime();}else if(caseSt){deltaMs=nowMs-caseSt.getTime();}}}var timeLbl=fmtStepDelta(deltaMs);var ty=stepTypeClass(st);h+='<div class=\"test-step '+sc+(stepHasScreenshots(st)?' has-shot-step':'')+'\" data-step-idx=\"'+si+'\"><div class=\"test-step-hd'+(stepHasScreenshots(st)?' has-shot-hd':'')+'\">'+renderStepTitleHtml(st,si)+'<div class=\"test-step-badges\">'+(ty?('<span class=\"step-type-pill '+ty.cls+'\">'+ty.txt+'</span>'):'')+'<span class=\"step-status-pill '+sc+'\">'+pillTxt+'</span><span class=\"step-delta\">'+timeLbl+'</span></div></div>';if(st.errorMessage){h+='<div class=\"error\">'+e(st.errorMessage)+'</div>';}h+=addMetaRows(st);h+=renderAttachedFiles(st);h+=renderStepScreenshotsBlock(st);h+='</div>';});}h+='</div>';document.getElementById('testcase-content').innerHTML=h;restoreOpenStepScreenshots();}");
         
         html.append("function suiteSelectedTags(){return Object.keys(suiteAdvSelectedTags).filter(function(k){return suiteAdvSelectedTags[k];});}");
         html.append("function sidebarItemMatchesFilters(it){var nm=(it.querySelector('.sidebar-item-name')||{}).textContent||'';var st=it.getAttribute('data-status')||'';var tags=String(it.getAttribute('data-tags')||'').split('|').map(function(t){return t.trim();}).filter(Boolean);if(!suiteStatusFilters[st])return false;var want=suiteSelectedTags();if(want.length&&!want.some(function(tg){return tags.indexOf(tg)>=0;}))return false;var q=currentSearch.trim().toLowerCase();if(q){var hay=(nm+' '+tags.join(' ')).toLowerCase();if(hay.indexOf(q)<0)return false;}return true;}");
@@ -1593,15 +1568,15 @@ html.append("function applySidebarFilters(){var visible=0;document.querySelector
                 htmlFolder.mkdirs();
             }
 
-            // Finalize HTML report by copying the live view as requested
+            // Finalize HTML report with the latest live shell (includes step screenshot toggle UI).
             String htmlReportPath = htmlFolderPath + "merv-report.html";
             String liveHtmlReportPath = htmlFolderPath + "merv-report-live.html";
-            if (new File(liveHtmlReportPath).isFile()) {
-                Files.copy(Paths.get(liveHtmlReportPath), Paths.get(htmlReportPath), java.nio.file.StandardCopyOption.REPLACE_EXISTING);
-                System.out.println("HTML report finalized from live report: " + htmlReportPath);
-            } else {
-                System.err.println("Live report not found, skipping merv-report.html copy: " + liveHtmlReportPath);
-            }
+            String liveHtmlAltPath = htmlFolderPath + "merv-live-report.html";
+            String content = buildLiveHtmlReportContent();
+            FileUtils.writeFile(htmlReportPath, content);
+            FileUtils.writeFile(liveHtmlReportPath, content);
+            FileUtils.writeFile(liveHtmlAltPath, content);
+            System.out.println("HTML report finalized: " + htmlReportPath);
 
             // Generate JSON report in json folder
             String jsonReportPath = jsonFolderPath + "merv-report.json";
@@ -1713,7 +1688,8 @@ html.append("function applySidebarFilters(){var visible=0;document.querySelector
         html.append(".sidebar { width: 400px; background: var(--sidebar-bg); color: var(--nav-text); padding: 20px 16px; overflow-y: auto; position: fixed; height: 100vh; box-shadow: 1px 0 0 var(--sidebar-border); }\n");
         html.append(".sidebar-brand { margin-bottom: 20px; padding-bottom: 18px; border-bottom: 1px solid var(--sidebar-border); text-align: center; }\n");
         html.append(".brand-logo { max-width: 180px; height: auto; display: block; margin: 0 auto; }\n");
-        html.append(".sidebar-local-label { margin: 12px 0 0; padding: 0; font-size: 13px; font-weight: 700; color: var(--nav-active-text); letter-spacing: 0.04em; text-align: center; }\n");
+        html.append(".sidebar-local-label { margin: 12px 0 0; padding: 0; font-size: 13px; font-weight: 700; color: var(--nav-active-text); letter-spacing: 0.04em; text-align: center; display: block; text-decoration: none; cursor: pointer; }\n");
+        html.append(".sidebar-local-label:hover { color: #c20000; text-decoration: underline; text-underline-offset: 2px; }\n");
         html.append(".sidebar-search { margin-bottom: 16px; }\n");
         html.append(".sidebar-search input { width: 100%; padding: 10px 12px; border: 1px solid #ddd; border-radius: 6px; background-color: #fff; color: #333; font-size: 14px; box-sizing: border-box; }\n");
         html.append(".sidebar-search input::placeholder { color: #999; }\n");
@@ -1770,6 +1746,13 @@ html.append("function applySidebarFilters(){var visible=0;document.querySelector
         html.append(".test-step.in_progress { border-left: 3px solid #ffc107; }\n");
         html.append(".test-step-hd { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin: 0 0 6px; flex-wrap: wrap; }\n");
         html.append(".test-step-title { margin: 0; flex: 1; min-width: 0; font-size: 14px; font-weight: 600; color: #333; line-height: 1.35; word-break: break-word; }\n");
+        html.append(".test-step-title.has-shot { cursor: pointer; }\n");
+        html.append(".test-step-title.has-shot:hover, .test-step-title.has-shot.shots-open { color: #c20000; }\n");
+        html.append(".test-step-title .step-shot-icon { margin-right: 6px; opacity: 0.85; font-size: 13px; }\n");
+        html.append(".test-step-hd.has-shot-hd { cursor: pointer; }\n");
+        html.append(".test-step-hd.has-shot-hd:hover .test-step-title.has-shot { color: #c20000; }\n");
+        html.append(".step-screenshots { display: none; margin-top: 8px; }\n");
+        html.append(".step-screenshots.open { display: block !important; }\n");
         html.append(".test-step-badges { display: inline-flex; align-items: center; gap: 10px; flex-shrink: 0; margin-left: auto; }\n");
         html.append(".step-status-pill { display: inline-flex; align-items: center; padding: 3px 10px; border-radius: 999px; font-size: 10px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; border: 1px solid #d0d7de; background: #eef2f6; color: #364152; white-space: nowrap; }\n");
         html.append(".step-status-pill.passed { background: #e8f5e9; color: #1b5e20; border-color: #c8e6c9; }\n");
@@ -1932,6 +1915,37 @@ html.append("function applySidebarFilters(){var visible=0;document.querySelector
         html.append("    else if (act === 'play') moviePlay(box);\n");
         html.append("    else if (act === 'pause') moviePause(box);\n");
         html.append("});\n");
+        html.append("function stepShotClickTarget(el) {\n");
+        html.append("    if (!el || !el.closest) return null;\n");
+        html.append("    if (el.closest('a, button, input, textarea, select, .step-screenshots img')) return null;\n");
+        html.append("    var step = el.closest('.test-step[data-step-idx]');\n");
+        html.append("    if (!step || !step.querySelector('.step-screenshots')) return null;\n");
+        html.append("    var hd = el.closest('.test-step-hd.has-shot-hd');\n");
+        html.append("    if (!hd || !step.contains(hd)) return null;\n");
+        html.append("    return step.querySelector('.test-step-title') || hd;\n");
+        html.append("}\n");
+        html.append("function toggleStepScreenshots(titleEl) {\n");
+        html.append("    var step = titleEl.closest('.test-step');\n");
+        html.append("    if (!step) return;\n");
+        html.append("    var shots = step.querySelector('.step-screenshots');\n");
+        html.append("    if (!shots) return;\n");
+        html.append("    shots.classList.toggle('open');\n");
+        html.append("    var title = step.querySelector('.test-step-title');\n");
+        html.append("    if (title) title.classList.toggle('shots-open', shots.classList.contains('open'));\n");
+        html.append("}\n");
+        html.append("document.addEventListener('click', function(e) {\n");
+        html.append("    var title = stepShotClickTarget(e.target);\n");
+        html.append("    if (!title) return;\n");
+        html.append("    e.preventDefault();\n");
+        html.append("    toggleStepScreenshots(title);\n");
+        html.append("});\n");
+        html.append("document.addEventListener('keydown', function(e) {\n");
+        html.append("    if (e.key !== 'Enter' && e.key !== ' ') return;\n");
+        html.append("    var title = stepShotClickTarget(e.target);\n");
+        html.append("    if (!title) return;\n");
+        html.append("    e.preventDefault();\n");
+        html.append("    toggleStepScreenshots(title);\n");
+        html.append("});\n");
         html.append("function showTestCase(testCaseId) {\n");
         html.append("    // Hide all test case contents\n");
         html.append("    var allContents = document.querySelectorAll('.test-case-content');\n");
@@ -2085,7 +2099,7 @@ html.append("function applySidebarFilters(){var visible=0;document.querySelector
         html.append("</head>\n<body>\n");
         html.append("<div class=\"main-wrapper\">\n");
         html.append("<div class=\"sidebar\">\n");
-        html.append("<div class=\"sidebar-brand\"><img class=\"brand-logo\" src=\"").append(MervReportBranding.LOGO_URL).append("\" alt=\"Merv\"><p class=\"sidebar-local-label\">Merv Local</p></div>\n");
+        html.append("<div class=\"sidebar-brand\"><img class=\"brand-logo\" src=\"").append(MervReportBranding.LOGO_URL).append("\" alt=\"Merv\"><a class=\"sidebar-local-label\" href=\"../../index.html\" title=\"Open local dashboard\">Merv Local</a></div>\n");
         html.append("<div class=\"sidebar-search\">\n");
         html.append("<input type=\"text\" id=\"testcase-search\" placeholder=\"Search test cases...\" onkeyup=\"searchTestCases()\">\n");
         html.append("</div>\n");
@@ -2274,9 +2288,24 @@ html.append("function applySidebarFilters(){var visible=0;document.querySelector
                     String timeLbl = formatStepDeltaSecondsMillis(deltaMs);
                     String rowCls = priorFail ? "skipped" : stepRowCssClass(step);
                     String pill = priorFail ? "SKIP" : stepPillLabelForReport(step);
-                    html.append("<div class=\"test-step ").append(rowCls).append("\">\n");
-                    html.append("<div class=\"test-step-hd\">\n");
-                    html.append("<p class=\"test-step-title\">").append(escapeHtml(step.getTeststepName())).append("</p>\n");
+                    boolean hasStepScreenshots = step.getScreenshots() != null && !step.getScreenshots().isEmpty();
+                    html.append("<div class=\"test-step ").append(rowCls).append("\" data-step-idx=\"").append(si).append("\">\n");
+                    html.append("<div class=\"test-step-hd");
+                    if (hasStepScreenshots) {
+                        html.append(" has-shot-hd");
+                    }
+                    html.append("\">\n");
+                    html.append("<p class=\"test-step-title");
+                    if (hasStepScreenshots) {
+                        html.append(" has-shot\" role=\"button\" tabindex=\"0\" title=\"Click to show/hide screenshot\"");
+                    } else {
+                        html.append("\"");
+                    }
+                    html.append(">");
+                    if (hasStepScreenshots) {
+                        html.append("<span class=\"step-shot-icon\" aria-hidden=\"true\">&#128247;</span> ");
+                    }
+                    html.append(escapeHtml(step.getTeststepName())).append("</p>\n");
                     html.append("<div class=\"test-step-badges\">\n");
                     html.append("<span class=\"step-status-pill ").append(rowCls).append("\">").append(escapeHtml(pill)).append("</span>\n");
                     html.append("<span class=\"step-delta\">").append(escapeHtml(timeLbl)).append("</span>\n");
@@ -2307,16 +2336,14 @@ html.append("function applySidebarFilters(){var visible=0;document.querySelector
                         html.append("</div>\n");
                     }
 
-                    // Display screenshots if any
-                    if (step.getScreenshots() != null && !step.getScreenshots().isEmpty()) {
-                        html.append("<div class=\"screenshots\">\n");
-                        html.append("<p><strong>Screenshots:</strong></p>\n");
+                    // Display screenshots if any (hidden until step title is clicked)
+                    if (hasStepScreenshots) {
+                        html.append("<div class=\"step-screenshots\">\n");
                         for (String screenshot : step.getScreenshots()) {
                             // Calculate relative path from html folder to report root
                             String relativePath = ".." + File.separator + screenshot;
                             html.append("<div class=\"screenshot\">\n");
                             html.append("<img src=\"").append(relativePath.replace("\\", "/")).append("\" alt=\"Screenshot\" style=\"max-width: 800px; margin: 10px 0; border: 1px solid #ddd; border-radius: 4px; cursor: pointer;\" onclick=\"window.open(this.src, '_blank')\">\n");
-                            html.append("<p style=\"font-size: 0.85em; color: #666;\">").append(escapeHtml(screenshot)).append("</p>\n");
                             html.append("</div>\n");
                         }
                         html.append("</div>\n");
@@ -2650,6 +2677,7 @@ html.append("function applySidebarFilters(){var visible=0;document.querySelector
         private String prereq;
         private List<String> screenshots;
         private List<String> logs;
+        private List<MervTestDataFileHtml.AttachedFile> attachedFiles;
 
         public UUID getId() { return id; }
         public void setId(UUID id) { this.id = id; }
@@ -2677,6 +2705,8 @@ html.append("function applySidebarFilters(){var visible=0;document.querySelector
         public void setScreenshots(List<String> screenshots) { this.screenshots = screenshots; }
         public List<String> getLogs() { return logs; }
         public void setLogs(List<String> logs) { this.logs = logs; }
+        public List<MervTestDataFileHtml.AttachedFile> getAttachedFiles() { return attachedFiles; }
+        public void setAttachedFiles(List<MervTestDataFileHtml.AttachedFile> attachedFiles) { this.attachedFiles = attachedFiles; }
     }
 
     /**

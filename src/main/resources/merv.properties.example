@@ -46,9 +46,15 @@ merv.sprint=Sprint 1
 # Used by Cucumber handler for suite status management
 merv.execution.parallel=false
 
-# Per-step screenshots from your automation driver (requires MervCucumberHandler.setAutomationToolObject)
-# Accepts: on, true, yes, 1 (also accepts legacy key "screenshot")
-# merv.screenshot=on
+# ============================================================================
+# Local reports (Merv-Local)
+# ============================================================================
+# Root folder for timestamped run folders (html/, json/, index.html). Defaults to ./merv-reports/ when omitted.
+# merv.report.folder=./merv-reports/
+
+# Per-step screenshots from your automation driver (requires setAutomationToolObject in your hooks/base test)
+# Accepts: true, on, yes, 1 (also accepts legacy key "screenshot")
+# merv.screenshot=true
 
 # Local report upload bundle for MERV UI (json/merv-report.json + screenshots → merv-report-upload.zip)
 # merv.zip.export=true

@@ -3,6 +3,7 @@ package org.teche.merv.client.report.html;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.teche.merv.client.config.MervConfig;
+import org.teche.merv.client.utils.MervPropertyFlags;
 
 import java.io.BufferedInputStream;
 import java.io.BufferedOutputStream;
@@ -33,8 +34,7 @@ public final class MervLocalReportZipWriter {
         if (raw == null) {
             return true;
         }
-        String v = raw.trim().toLowerCase();
-        return v.equals("true") || v.equals("on") || v.equals("yes") || v.equals("1");
+        return MervPropertyFlags.isTruthyValue(raw);
     }
 
     /**

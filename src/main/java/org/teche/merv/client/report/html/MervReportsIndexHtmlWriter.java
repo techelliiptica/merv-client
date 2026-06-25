@@ -234,7 +234,8 @@ public final class MervReportsIndexHtmlWriter {
         html.append(".sidebar{width:260px;background:var(--sidebar);border-right:1px solid var(--border);padding:20px 0 0;flex-shrink:0;position:sticky;top:0;align-self:flex-start;min-height:100vh;display:flex;flex-direction:column;}\n");
         html.append(".sidebar-brand{text-align:center;padding:0 16px 12px;border-bottom:1px solid var(--border);margin-bottom:0;}\n");
         html.append(".sidebar-brand img{max-width:140px;height:auto;display:block;margin:0 auto;}\n");
-        html.append(".sidebar-local-label{text-align:center;margin:0;padding:12px 16px 14px;border-bottom:1px solid var(--border);font-size:13px;font-weight:700;color:var(--merv-red);letter-spacing:.04em;}\n");
+        html.append(".sidebar-local-label{text-align:center;margin:0;padding:12px 16px 14px;border-bottom:1px solid var(--border);font-size:13px;font-weight:700;color:var(--merv-red);letter-spacing:.04em;display:block;text-decoration:none;cursor:pointer;}\n");
+        html.append(".sidebar-local-label:hover{text-decoration:underline;text-underline-offset:2px;}\n");
         html.append(".nav{margin:8px 0;padding:0 12px;flex:1;min-height:0;}\n");
         html.append(".sidebar-footer{margin-top:auto;padding:18px 14px 22px;border-top:1px solid var(--border);text-align:center;}\n");
         html.append(".sidebar-footer a.sidebar-merv-online{display:block;font-size:13px;font-weight:600;color:#0d6efd;text-decoration:none;margin-bottom:14px;}\n");
@@ -466,7 +467,7 @@ public final class MervReportsIndexHtmlWriter {
         html.append(".sidebar-filters-wrap{padding:0 12px 12px;border-bottom:1px solid var(--border);margin-bottom:4px;}.sidebar-filters{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px;}.sidebar-filters .filter-btn{flex:1;min-width:52px;padding:8px 10px;border:1px solid #d6dbe2;border-radius:8px;background:#fff;color:#374151;font-size:11px;font-weight:600;cursor:pointer;}.sidebar-filters .filter-btn.active{background:var(--merv-grad);color:#fff;border-color:transparent;}.sidebar-search-row{display:flex;align-items:stretch;gap:8px;}.sidebar-filter-btn{flex-shrink:0;width:42px;padding:0;border:1px solid #d6dbe2;border-radius:8px;background:#fff;color:#555;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;}.sidebar-tag-panel{margin-top:10px;padding:12px;background:#fff;border:1px solid #e8eaed;border-radius:10px;max-height:min(48vh,380px);overflow:auto;}.sidebar-tag-panel[hidden]{display:none!important;}.adv-tag-cloud{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:14px;}.adv-tag-pill{border:1px solid #d6dbe2;background:#f8f9fa;border-radius:999px;padding:5px 10px;font-size:11px;font-weight:600;cursor:pointer;}.adv-tag-pill.selected{background:#fdeaea;border-color:var(--merv-red);color:var(--merv-red);}#adv-text-search{width:100%;padding:8px 10px;border:1px solid #d6dbe2;border-radius:8px;font-size:12px;}.adv-clear-btn{padding:6px 12px;border:1px solid #d6dbe2;border-radius:8px;background:#fff;font-size:12px;cursor:pointer;}\n");
         html.append("</style>\n</head>\n<body>\n<div class=\"dash\">\n");
         html.append("<aside class=\"sidebar\"><div class=\"sidebar-brand\"><img src=\"").append(logo).append("\" alt=\"Merv\"></div>\n");
-        html.append("<p class=\"sidebar-local-label\">Merv-Local</p>\n");
+        html.append("<a class=\"sidebar-local-label\" href=\"index.html\" title=\"Local dashboard\">Merv-Local</a>\n");
         html.append("<!-- merv-index-shell-v3 -->\n");
         html.append("<div class=\"sidebar-filters-wrap\" id=\"sidebar-filters-wrap\">\n");
         html.append("<div class=\"sidebar-filters\" role=\"group\" aria-label=\"Filter by status\">\n");

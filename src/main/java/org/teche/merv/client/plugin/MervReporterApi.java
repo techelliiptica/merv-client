@@ -5,14 +5,9 @@ import org.teche.merv.client.dto.TestStepResponse;
 import java.io.File;
 
 /**
- * Runner-agnostic step API.
- *
- * <p>All framework handlers (Cucumber/TestNG/JUnit5) bind execution context to {@link MervPluginSteps}.
- * Test code should call this interface (via {@link MervReporter}) instead of handler-specific static methods.</p>
- *
- * <p>Preferred step helpers: {@link #data}, {@link #validation}, {@link #info} (aligned with merv-client-js).</p>
+ * Runner-agnostic step API (internal). Test code should use {@link MervReporter}.
  */
-public interface MervReporterApi {
+interface MervReporterApi {
     TestStepResponse addStep(
             String stepName,
             String stepType,
@@ -43,39 +38,4 @@ public interface MervReporterApi {
     void skipStep();
 
     void skipStep(boolean viewInReport);
-
-    /** @deprecated Use {@link #data(String, String)}. */
-    @Deprecated
-    default TestStepResponse addDataStep(String stepName, String testdata) {
-        return data(stepName, testdata);
-    }
-
-    /** @deprecated Use {@link #data(String, File, org.teche.merv.client.dto.FileType, String)}. */
-    @Deprecated
-    default TestStepResponse addDataStep(String stepName, File file, org.teche.merv.client.dto.FileType fileType, String prereq) {
-        return data(stepName, file, fileType, prereq);
-    }
-
-    /** @deprecated Use {@link #validation(String, String, String, String, String)}. */
-    @Deprecated
-    default TestStepResponse addValidationStep(
-            String stepName,
-            String expected,
-            String actual,
-            String testdata,
-            String prereq) {
-        return validation(stepName, expected, actual, testdata, prereq);
-    }
-
-    /** @deprecated Use {@link #validation(String, String, String)}. */
-    @Deprecated
-    default TestStepResponse addValidationStep(String stepName, String expected, String actual) {
-        return validation(stepName, expected, actual);
-    }
-
-    /** @deprecated Use {@link #validation(String)}. */
-    @Deprecated
-    default TestStepResponse addValidationStep(String stepName) {
-        return validation(stepName);
-    }
 }

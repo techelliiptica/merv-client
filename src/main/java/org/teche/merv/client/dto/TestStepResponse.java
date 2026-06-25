@@ -34,6 +34,9 @@ public class TestStepResponse {
     
     private String testdata;
     
+    @JsonProperty("step_type")
+    private String stepType;
+    
     private String status;
     
     @JsonProperty("screenshot_filename")
