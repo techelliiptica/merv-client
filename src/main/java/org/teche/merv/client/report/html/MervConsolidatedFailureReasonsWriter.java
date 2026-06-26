@@ -87,7 +87,7 @@ public final class MervConsolidatedFailureReasonsWriter {
                 if (!"FAILED".equals(st)) {
                     continue;
                 }
-                String r = c.failureReason == null ? "" : c.failureReason.trim();
+                String r = MervFailureReasonGrouping.groupingKey(c.failureReason);
                 if (r.isBlank()) {
                     r = "(No failure message)";
                 }

@@ -2600,7 +2600,7 @@ html.append("function applySidebarFilters(){var visible=0;document.querySelector
         if (r == null || r.trim().isEmpty()) {
             return "(No failure message)";
         }
-        return r.trim();
+        return MervFailureReasonGrouping.groupingKey(r);
     }
 
     /**
