@@ -7,7 +7,7 @@
 
     <groupId>io.github.techelliiptica</groupId>
     <artifactId>merv-client-api</artifactId>
-    <version>3.0.5</version>
+    <version>4.0.23</version>
     <packaging>jar</packaging>
 
     <name>MERV Client API</name>
@@ -102,6 +102,29 @@
             <groupId>org.slf4j</groupId>
             <artifactId>slf4j-simple</artifactId>
             <version>2.0.7</version>
+            <optional>true</optional>
+        </dependency>
+
+        <!-- Optional backends for MervLogAppender adapters (compile-only; not transitive) -->
+        <dependency>
+            <groupId>ch.qos.logback</groupId>
+            <artifactId>logback-classic</artifactId>
+            <version>1.4.14</version>
+            <scope>provided</scope>
+            <optional>true</optional>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.logging.log4j</groupId>
+            <artifactId>log4j-core</artifactId>
+            <version>2.20.0</version>
+            <scope>provided</scope>
+            <optional>true</optional>
+        </dependency>
+        <dependency>
+            <groupId>log4j</groupId>
+            <artifactId>log4j</artifactId>
+            <version>1.2.17</version>
+            <scope>provided</scope>
             <optional>true</optional>
         </dependency>
 
@@ -266,7 +289,7 @@
                     </descriptorRefs>
                     <archive>
                         <manifest>
-                            <mainClass>org.teche.merv.client.MervClientApplication</mainClass>
+                            <mainClass>org.teche.merv.client.cli.MervCli</mainClass>
                         </manifest>
                     </archive>
                 </configuration>
@@ -278,8 +301,69 @@
                             <goal>single</goal>
                         </goals>
                     </execution>
+                    <execution>
+                        <id>make-cli-distribution</id>
+                        <phase>package</phase>
+                        <goals>
+                            <goal>single</goal>
+                        </goals>
+                        <configuration>
+                            <descriptors>
+                                <descriptor>src/assembly/cli-distribution.xml</descriptor>
+                            </descriptors>
+                            <appendAssemblyId>true</appendAssemblyId>
+                        </configuration>
+                    </execution>
                 </executions>
             </plugin>
         </plugins>
     </build>
+
+    <profiles>
+        <profile>
+            <id>portal-downloads</id>
+            <activation>
+                <file>
+                    <exists>${project.basedir}/../merv-ui/public/website/downloads</exists>
+                </file>
+            </activation>
+            <properties>
+                <portal.downloads.dir>${project.basedir}/../merv-ui/public/website/downloads</portal.downloads.dir>
+            </properties>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-antrun-plugin</artifactId>
+                        <version>3.1.0</version>
+                        <executions>
+                            <execution>
+                                <id>copy-portal-downloads</id>
+                                <phase>package</phase>
+                                <goals>
+                                    <goal>run</goal>
+                                </goals>
+                                <configuration>
+                                    <target>
+                                        <mkdir dir="${portal.downloads.dir}"/>
+                                        <copy file="${project.build.directory}/${project.artifactId}-${project.version}-jar-with-dependencies.jar"
+                                              tofile="${portal.downloads.dir}/merv-client.jar" overwrite="true"/>
+                                        <copy file="${project.build.directory}/${project.artifactId}-${project.version}-cli.zip"
+                                              tofile="${portal.downloads.dir}/merv-client-cli.zip" overwrite="true"/>
+                                        <copy file="${project.build.directory}/${project.artifactId}-${project.version}-cli.tar.gz"
+                                              tofile="${portal.downloads.dir}/merv-client-cli.tar.gz" overwrite="true"/>
+                                        <copy file="${project.basedir}/src/main/scripts/merv-client"
+                                              tofile="${portal.downloads.dir}/merv-client" overwrite="true"/>
+                                        <copy file="${project.basedir}/src/main/scripts/merv-client.bat"
+                                              tofile="${portal.downloads.dir}/merv-client.bat" overwrite="true"/>
+                                        <chmod file="${portal.downloads.dir}/merv-client" perm="ugo+rx"/>
+                                    </target>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+    </profiles>
 </project>

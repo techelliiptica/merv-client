@@ -22,7 +22,8 @@ import java.util.Properties;
 /**
  * Minimal localhost HTTP API so {@code reports/index.html} can delete report folders on disk.
  * <p>
- * Binds to {@code 127.0.0.1} only. Not tied to Step Editor (port 6174/9090).
+ * For Share / Download / static serving, prefer
+ * {@link org.teche.merv.client.utils.MervLocalReportServer} (or {@code npx merv show-report}).
  * </p>
  * <pre>
  *   mvn -q exec:java -Dexec.classpathScope=test -Dexec.mainClass="org.teche.merv.client.utils.ReportsDeleteServer"

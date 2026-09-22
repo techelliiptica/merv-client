@@ -11,10 +11,19 @@ This document is the **single source of truth** for how local reports are struct
 ## Report layout on disk
 
 Assume `reportRoot` = value from `MervConfig.getReportFolder()` (trailing separator optional).
+For Merv-Tutor CLI runs, `reportRoot` is fixed to
+`<nearest package.json directory>/merv-reports`; Tutor does not create or require
+`merv.properties`, so invoking it from a nested source folder cannot create a
+second report tree there.
 
 | Path | Purpose |
 |------|---------|
 | `{reportRoot}/index.html` | Local dashboard: suite cards, KPI/consolidated views, Chart.js. Regenerated when runs finish or folders change. |
+| `{reportRoot}/merv-logs.html` | **Merv-Logs** live console (pages 100 lines; polls `/api/logs/query`). |
+| `{reportRoot}/merv-tutor.html` | **Merv-Tutor** project debugger UI (opened with `npx merv-tutor open`). |
+| `{reportRoot}/merv-tutor/latest.json` | Persistent tutor project trace. Contains only files explicitly executed through `merv-tutor`; project-relative paths are stable IDs and re-running a path replaces that file's trace. Each `files[]` entry carries a `complexity` estimate (`time`, `space`, `maxLoopDepth`, `growsCollection`, `recursive`) computed statically at instrumentation time; traces written before 4.0.17 report `n/a`. |
+| `{reportRoot}/log/merv-YYYY-MM-DDTHH-mm.ndjson` | Structured `MervLogger` lines in **5-minute** files (UTC). Optional `screenshot` field. |
+| `{reportRoot}/log/screenshots/` | Images attached via `MervLogger.info(…, { screenshot })`. |
 | `{reportRoot}/{runFolder}/html/merv-report.html` | Final suite report (often finalized from live). |
 | `{reportRoot}/{runFolder}/html/merv-report-live.html` | Live-updating suite report during execution. |
 | `{reportRoot}/{runFolder}/json/merv-report.json` | **Source of truth** for the dashboard and tooling. |
@@ -22,6 +31,8 @@ Assume `reportRoot` = value from `MervConfig.getReportFolder()` (trailing separa
 | `{reportRoot}/{runFolder}/failure-test.json` | Copy of the same file when the suite **completes**. |
 | `{reportRoot}/failure-test.json` | Latest completed run’s failures (overwritten each time a suite finishes). |
 | `{reportRoot}/{runFolder}/merv-report-upload.zip` | Upload bundle for MERV UI import (`json/merv-report.json` + screenshots). Created when `merv.zip.export=true` (default). |
+| `{reportRoot}/{runFolder}/emailable-report.html` | Compact emailable summary (scenarios, status, failure reasons, totals). Written when `merv.emailable.html=true` (also copied to `{reportRoot}/emailable-report.html`). Download from the suite UI always regenerates it. |
+| `{reportRoot}/{runFolder}/merv-report-offline.zip` | Offline share zip (root `index.html` → suite HTML + assets; no Merv Local links). Built on **Download** via `npx merv show-report` or Java `MervLocalReportServer` `/api/prepare-download`. |
 
 Run folder naming (Cucumber today): `dd-MM-yyyy HH-mm-ss Merv-Report`. Other frameworks should use a **single directory segment** name and the same relative layout under it (`html/`, `json/`).
 
@@ -33,6 +44,12 @@ Run folder naming (Cucumber today): `dd-MM-yyyy HH-mm-ss Merv-Report`. Other fra
 | `MervHtmlEscape` | Escaping user-controlled text in generated HTML. |
 | `MervReportsIndexHtmlWriter` | Builds/refreshes **`index.html`**. Call **`write(String reportRoot)`** after JSON exists or after deleting a run folder. |
 | `MervLocalReportZipWriter` | Builds **`merv-report-upload.zip`** for MERV UI testcase import. Call **`writeUploadZipIfEnabled(runFolder)`** after final JSON exists. |
+| `MervEmailableHtmlWriter` | Builds **`emailable-report.html`** when **`merv.emailable.html=true`** (`writeIfEnabled`). Download always regenerates via **`writeFromDisk`**. |
+| `MervOfflineReportZipWriter` | Builds **`merv-report-offline.zip`** on download only (`packageOfflineReportZip`). Not auto-run on suite finalize. |
+| `MervLocalReportArtifacts` | `afterLocalFinalize(runFolder)` — emailable if enabled; does not build offline zip. |
+| `MervSuiteShareDownloadHtml` | Share / Download toolbar + modals for suite HTML (Cucumber/TestNG/JUnit). |
+
+**Local HTTP (Share / Download):** Java `org.teche.merv.client.utils.MervLocalReportServer`, or JS `npx merv show-report`. Both expose `/api/share-info` and `/api/prepare-download`.
 
 **Do not** reimplement `index.html` inside a TestNG/JUnit listener; call `MervReportsIndexHtmlWriter.write(...)`.
 
@@ -47,7 +64,7 @@ The dashboard and `MervReportsIndexHtmlWriter` expect a JSON document compatible
   - `testSuite` (object)
     - `title` (string)
     - `testCases` (array)
-      - `testcaseName`, `status` (`PASSED` / `FAILED` / `SKIPPED` / `IN_PROGRESS`), `failureReason`, `tags` (array of strings), `startTime` / `endTime`, `executionMachine`, `testSteps` (array with steps, logs, screenshots paths), etc.
+      - `testcaseName`, `status` (`PASSED` / `FAILED` / `SKIPPED` / `IN_PROGRESS`), `failureReason`, `tags` (array of strings), `startTime` / `endTime`, `executionMachine`, `testSteps` (array with steps, logs, screenshots paths), `logs` (optional array of `MervLogger` lines for the testcase Logs section), etc.
 
 For exact fields, align with **`MervCucumberHandler.generateJsonReport`** and runtime snapshots that feed **`merv-report.json`**. The index page also reads each run’s JSON for summary cards (pass/fail/skip, tags).
 

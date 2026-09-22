@@ -191,8 +191,14 @@
       if (show && hasActiveAdvFilters() && snaps && snaps.length) {
         show = !!folderHasMatch[folderEnc];
       }
-      card.style.display = show ? '' : 'none';
+      if (show) card.removeAttribute('data-search-hidden');
+      else card.setAttribute('data-search-hidden', '1');
+      var pageHidden = card.getAttribute('data-page-hidden') === '1';
+      card.style.display = show && !pageHidden ? '' : 'none';
     });
+    if (window.__mervLiveDashboard && typeof window.__mervLiveDashboard.applySuiteCardVisibility === 'function') {
+      window.__mervLiveDashboard.applySuiteCardVisibility();
+    }
   }
 
   function applyAllFilters() {

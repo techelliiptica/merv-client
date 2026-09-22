@@ -1,5 +1,7 @@
 package org.teche.merv.client.config;
 
+import org.teche.merv.client.utils.MervPropertyFlags;
+
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.InputStream;
@@ -150,6 +152,14 @@ public class MervConfig {
         return initialized;
     }
     
+    /**
+     * Whether to write interactive {@code emailable-report.html} on local suite finalize.
+     * Reads {@code merv.emailable.html} (default {@code false}).
+     */
+    public static boolean isEmailableHtmlEnabled() {
+        return MervPropertyFlags.isTruthyValue(getProperty("merv.emailable.html", "false"));
+    }
+
     /**
      * Get the report folder path from configuration.
      * When {@code merv.report.folder} is not set, defaults to {@code merv-reports/} in the project root

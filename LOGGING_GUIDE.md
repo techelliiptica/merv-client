@@ -79,6 +79,13 @@ merv.logger.level=INFO
 # Use SLF4J backend if available (true/false)
 merv.logger.use.slf4j=true
 
+# Also write NDJSON for the Merv-Logs page (default true)
+merv.logger.file=true
+
+# Forward logs to another project's show-report (combined Merv-Logs)
+# merv.log.server=http://127.0.0.1:6174
+# merv.log.source=my-project-name
+
 # Custom log format pattern (optional)
 merv.logger.format.pattern=[%d] %level %logger - %msg
 
@@ -86,12 +93,67 @@ merv.logger.format.pattern=[%d] %level %logger - %msg
 merv.logger.date.format=yyyy-MM-dd HH:mm:ss.SSS
 ```
 
+### Merv-Logs (on-disk NDJSON)
+
+When `merv.logger.file=true` (default), every `MervLogger` line is also appended under:
+
+```
+{merv.report.folder}/log/merv-YYYY-MM-DDTHH-mm.ndjson
+{merv.report.folder}/log/manifest.json
+{merv.report.folder}/merv-logs.html
+```
+
+Open **Merv-Logs** from the local dashboard sidebar (or open `merv-logs.html` with a static server). The page can load `log/manifest.json` + NDJSON without Node — same layout as JS `merv-client`.
+
+Optional suite / testcase labels for filters:
+
+```java
+import org.teche.merv.client.logging.MervLogContext;
+
+MervLogContext.setSuite("Smoke Suite");
+MervLogContext.setTestcase("Login works");
+logger.info("Navigating to home");
+MervLogContext.clear();
+```
+
+Disable file sink only:
+
+```properties
+merv.logger.file=false
+```
+
+### Combined logs across projects (`merv.log.server`)
+
+Run the report server in Project A (hub):
+
+```bash
+npx merv show-report --host 0.0.0.0
+# or Java: MervLocalReportServer with host 0.0.0.0
+```
+
+In Project B’s `merv.properties` / `mervlogger.properties`:
+
+```properties
+# Forward each log line to Project A's show-report
+merv.log.server=http://127.0.0.1:6174
+# Project name only (shown on the shared page). Omit to use folder / package name.
+merv.log.source=project-b
+```
+
+Each line is written to Project B’s local `log/` first; the POST to A runs on a background
+thread / deferred task and never blocks the test.
+
+Env overrides: `MERV_LOG_SERVER`, `MERV_LOG_SOURCE`.
+
+On Project A’s Merv-Logs page, use **Copy log server URL** to grab the value for `merv.log.server`.
+Open Merv-Logs on Project A — lines from B are stamped with `project` and appear in the same live view.
 ### Configuration Properties
 
 | Property | Description | Default | Values |
 |----------|-------------|---------|--------|
 | `merv.logger.level` | Global log level | `INFO` | `TRACE`, `DEBUG`, `INFO`, `WARN`, `ERROR` |
 | `merv.logger.use.slf4j` | Use SLF4J backend if available | `true` | `true`, `false` |
+| `merv.logger.file` | Write NDJSON under `{merv.report.folder}/log/` for Merv-Logs | `true` | `true`, `false` |
 | `merv.logger.format.pattern` | Custom log format pattern | `[%d] %level %logger - %msg` | See format placeholders below |
 | `merv.logger.date.format` | Date format pattern | `yyyy-MM-dd HH:mm:ss.SSS` | Java SimpleDateFormat patterns |
 

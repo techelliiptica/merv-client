@@ -1,7 +1,7 @@
 @options
 @packages
 -classpath
-'/Users/vaibhavsingh/.m2/repository/org/apache/httpcomponents/client5/httpclient5/5.2.1/httpclient5-5.2.1.jar:/Users/vaibhavsingh/.m2/repository/org/apache/httpcomponents/core5/httpcore5/5.2/httpcore5-5.2.jar:/Users/vaibhavsingh/.m2/repository/org/apache/httpcomponents/core5/httpcore5-h2/5.2/httpcore5-h2-5.2.jar:/Users/vaibhavsingh/.m2/repository/com/fasterxml/jackson/core/jackson-databind/2.15.2/jackson-databind-2.15.2.jar:/Users/vaibhavsingh/.m2/repository/com/fasterxml/jackson/core/jackson-annotations/2.15.2/jackson-annotations-2.15.2.jar:/Users/vaibhavsingh/.m2/repository/com/fasterxml/jackson/core/jackson-core/2.15.2/jackson-core-2.15.2.jar:/Users/vaibhavsingh/.m2/repository/com/fasterxml/jackson/datatype/jackson-datatype-jsr310/2.15.2/jackson-datatype-jsr310-2.15.2.jar:/Users/vaibhavsingh/.m2/repository/com/google/code/gson/gson/2.11.0/gson-2.11.0.jar:/Users/vaibhavsingh/.m2/repository/com/google/errorprone/error_prone_annotations/2.27.0/error_prone_annotations-2.27.0.jar:/Users/vaibhavsingh/.m2/repository/org/slf4j/slf4j-api/2.0.7/slf4j-api-2.0.7.jar:/Users/vaibhavsingh/.m2/repository/org/slf4j/slf4j-simple/2.0.7/slf4j-simple-2.0.7.jar:/Users/vaibhavsingh/.m2/repository/jakarta/validation/jakarta.validation-api/3.0.2/jakarta.validation-api-3.0.2.jar:/Users/vaibhavsingh/.m2/repository/org/projectlombok/lombok/1.18.46/lombok-1.18.46.jar:/Users/vaibhavsingh/.m2/repository/org/junit/jupiter/junit-jupiter-api/5.9.3/junit-jupiter-api-5.9.3.jar:/Users/vaibhavsingh/.m2/repository/org/opentest4j/opentest4j/1.2.0/opentest4j-1.2.0.jar:/Users/vaibhavsingh/.m2/repository/org/junit/platform/junit-platform-commons/1.9.3/junit-platform-commons-1.9.3.jar:/Users/vaibhavsingh/.m2/repository/org/apiguardian/apiguardian-api/1.1.2/apiguardian-api-1.1.2.jar:/Users/vaibhavsingh/.m2/repository/io/cucumber/cucumber-java/7.13.0/cucumber-java-7.13.0.jar:/Users/vaibhavsingh/.m2/repository/io/cucumber/cucumber-core/7.13.0/cucumber-core-7.13.0.jar:/Users/vaibhavsingh/.m2/repository/io/cucumber/cucumber-gherkin/7.13.0/cucumber-gherkin-7.13.0.jar:/Users/vaibhavsingh/.m2/repository/io/cucumber/cucumber-gherkin-messages/7.13.0/cucumber-gherkin-messages-7.13.0.jar:/Users/vaibhavsingh/.m2/repository/io/cucumber/gherkin/26.2.0/gherkin-26.2.0.jar:/Users/vaibhavsingh/.m2/repository/io/cucumber/messages/22.0.0/messages-22.0.0.jar:/Users/vaibhavsingh/.m2/repository/io/cucumber/tag-expressions/5.0.1/tag-expressions-5.0.1.jar:/Users/vaibhavsingh/.m2/repository/io/cucumber/cucumber-expressions/16.1.2/cucumber-expressions-16.1.2.jar:/Users/vaibhavsingh/.m2/repository/io/cucumber/datatable/7.13.0/datatable-7.13.0.jar:/Users/vaibhavsingh/.m2/repository/io/cucumber/cucumber-plugin/7.13.0/cucumber-plugin-7.13.0.jar:/Users/vaibhavsingh/.m2/repository/io/cucumber/docstring/7.13.0/docstring-7.13.0.jar:/Users/vaibhavsingh/.m2/repository/io/cucumber/html-formatter/20.3.1/html-formatter-20.3.1.jar:/Users/vaibhavsingh/.m2/repository/io/cucumber/junit-xml-formatter/0.2.0/junit-xml-formatter-0.2.0.jar:/Users/vaibhavsingh/.m2/repository/io/cucumber/ci-environment/9.2.0/ci-environment-9.2.0.jar:/Users/vaibhavsingh/.m2/repository/io/cucumber/cucumber-junit/7.13.0/cucumber-junit-7.13.0.jar:/Users/vaibhavsingh/.m2/repository/junit/junit/4.13.2/junit-4.13.2.jar:/Users/vaibhavsingh/.m2/repository/org/hamcrest/hamcrest-core/1.3/hamcrest-core-1.3.jar:/Users/vaibhavsingh/.m2/repository/org/testng/testng/7.10.2/testng-7.10.2.jar:/Users/vaibhavsingh/.m2/repository/com/beust/jcommander/1.82/jcommander-1.82.jar'
+'/Users/vaibhavsingh/.m2/repository/org/apache/httpcomponents/client5/httpclient5/5.2.1/httpclient5-5.2.1.jar:/Users/vaibhavsingh/.m2/repository/org/apache/httpcomponents/core5/httpcore5/5.2/httpcore5-5.2.jar:/Users/vaibhavsingh/.m2/repository/org/apache/httpcomponents/core5/httpcore5-h2/5.2/httpcore5-h2-5.2.jar:/Users/vaibhavsingh/.m2/repository/com/fasterxml/jackson/core/jackson-databind/2.15.2/jackson-databind-2.15.2.jar:/Users/vaibhavsingh/.m2/repository/com/fasterxml/jackson/core/jackson-annotations/2.15.2/jackson-annotations-2.15.2.jar:/Users/vaibhavsingh/.m2/repository/com/fasterxml/jackson/core/jackson-core/2.15.2/jackson-core-2.15.2.jar:/Users/vaibhavsingh/.m2/repository/com/fasterxml/jackson/datatype/jackson-datatype-jsr310/2.15.2/jackson-datatype-jsr310-2.15.2.jar:/Users/vaibhavsingh/.m2/repository/com/google/code/gson/gson/2.11.0/gson-2.11.0.jar:/Users/vaibhavsingh/.m2/repository/com/google/errorprone/error_prone_annotations/2.27.0/error_prone_annotations-2.27.0.jar:/Users/vaibhavsingh/.m2/repository/org/slf4j/slf4j-api/2.0.7/slf4j-api-2.0.7.jar:/Users/vaibhavsingh/.m2/repository/org/slf4j/slf4j-simple/2.0.7/slf4j-simple-2.0.7.jar:/Users/vaibhavsingh/.m2/repository/ch/qos/logback/logback-classic/1.4.14/logback-classic-1.4.14.jar:/Users/vaibhavsingh/.m2/repository/ch/qos/logback/logback-core/1.4.14/logback-core-1.4.14.jar:/Users/vaibhavsingh/.m2/repository/org/apache/logging/log4j/log4j-core/2.20.0/log4j-core-2.20.0.jar:/Users/vaibhavsingh/.m2/repository/org/apache/logging/log4j/log4j-api/2.20.0/log4j-api-2.20.0.jar:/Users/vaibhavsingh/.m2/repository/log4j/log4j/1.2.17/log4j-1.2.17.jar:/Users/vaibhavsingh/.m2/repository/jakarta/validation/jakarta.validation-api/3.0.2/jakarta.validation-api-3.0.2.jar:/Users/vaibhavsingh/.m2/repository/org/projectlombok/lombok/1.18.46/lombok-1.18.46.jar:/Users/vaibhavsingh/.m2/repository/org/junit/jupiter/junit-jupiter-api/5.9.3/junit-jupiter-api-5.9.3.jar:/Users/vaibhavsingh/.m2/repository/org/opentest4j/opentest4j/1.2.0/opentest4j-1.2.0.jar:/Users/vaibhavsingh/.m2/repository/org/junit/platform/junit-platform-commons/1.9.3/junit-platform-commons-1.9.3.jar:/Users/vaibhavsingh/.m2/repository/org/apiguardian/apiguardian-api/1.1.2/apiguardian-api-1.1.2.jar:/Users/vaibhavsingh/.m2/repository/io/cucumber/cucumber-java/7.13.0/cucumber-java-7.13.0.jar:/Users/vaibhavsingh/.m2/repository/io/cucumber/cucumber-core/7.13.0/cucumber-core-7.13.0.jar:/Users/vaibhavsingh/.m2/repository/io/cucumber/cucumber-gherkin/7.13.0/cucumber-gherkin-7.13.0.jar:/Users/vaibhavsingh/.m2/repository/io/cucumber/cucumber-gherkin-messages/7.13.0/cucumber-gherkin-messages-7.13.0.jar:/Users/vaibhavsingh/.m2/repository/io/cucumber/gherkin/26.2.0/gherkin-26.2.0.jar:/Users/vaibhavsingh/.m2/repository/io/cucumber/messages/22.0.0/messages-22.0.0.jar:/Users/vaibhavsingh/.m2/repository/io/cucumber/tag-expressions/5.0.1/tag-expressions-5.0.1.jar:/Users/vaibhavsingh/.m2/repository/io/cucumber/cucumber-expressions/16.1.2/cucumber-expressions-16.1.2.jar:/Users/vaibhavsingh/.m2/repository/io/cucumber/datatable/7.13.0/datatable-7.13.0.jar:/Users/vaibhavsingh/.m2/repository/io/cucumber/cucumber-plugin/7.13.0/cucumber-plugin-7.13.0.jar:/Users/vaibhavsingh/.m2/repository/io/cucumber/docstring/7.13.0/docstring-7.13.0.jar:/Users/vaibhavsingh/.m2/repository/io/cucumber/html-formatter/20.3.1/html-formatter-20.3.1.jar:/Users/vaibhavsingh/.m2/repository/io/cucumber/junit-xml-formatter/0.2.0/junit-xml-formatter-0.2.0.jar:/Users/vaibhavsingh/.m2/repository/io/cucumber/ci-environment/9.2.0/ci-environment-9.2.0.jar:/Users/vaibhavsingh/.m2/repository/io/cucumber/cucumber-junit/7.13.0/cucumber-junit-7.13.0.jar:/Users/vaibhavsingh/.m2/repository/junit/junit/4.13.2/junit-4.13.2.jar:/Users/vaibhavsingh/.m2/repository/org/hamcrest/hamcrest-core/1.3/hamcrest-core-1.3.jar:/Users/vaibhavsingh/.m2/repository/org/testng/testng/7.10.2/testng-7.10.2.jar:/Users/vaibhavsingh/.m2/repository/com/beust/jcommander/1.82/jcommander-1.82.jar'
 -encoding
 'UTF-8'
 -protected
@@ -20,11 +20,11 @@
 'UTF-8'
 -Xdoclint:none
 -doctitle
-'MERV Client API 3.0.3 API'
+'MERV Client API 4.0.22 API'
 -use
 -version
 -windowtitle
-'MERV Client API 3.0.3 API'
+'MERV Client API 4.0.22 API'
 org.teche.merv.client.dto
 org.teche.merv.client.config
 org.teche.merv.client.auth
@@ -32,8 +32,10 @@ org.teche.merv.client.example
 org.teche.merv.client.plugin
 org.teche.merv.client
 org.teche.merv.client.utils
+org.teche.merv.client.cli
 org.teche.merv.client.report.html
 org.teche.merv.client.exception
+org.teche.merv.client.logging.appender
 org.teche.merv.client.logging
 /Users/vaibhavsingh/.m2/repository/org/apache/httpcomponents/client5/httpclient5/5.2.1/httpclient5-5.2.1.jar = 1670081292000
 /Users/vaibhavsingh/.m2/repository/org/apache/httpcomponents/core5/httpcore5/5.2/httpcore5-5.2.jar = 1667477890000
@@ -46,6 +48,11 @@ org.teche.merv.client.logging
 /Users/vaibhavsingh/.m2/repository/com/google/errorprone/error_prone_annotations/2.27.0/error_prone_annotations-2.27.0.jar = 1714146969000
 /Users/vaibhavsingh/.m2/repository/org/slf4j/slf4j-api/2.0.7/slf4j-api-2.0.7.jar = 1679081818000
 /Users/vaibhavsingh/.m2/repository/org/slf4j/slf4j-simple/2.0.7/slf4j-simple-2.0.7.jar = 1679081832000
+/Users/vaibhavsingh/.m2/repository/ch/qos/logback/logback-classic/1.4.14/logback-classic-1.4.14.jar = 1701431604000
+/Users/vaibhavsingh/.m2/repository/ch/qos/logback/logback-core/1.4.14/logback-core-1.4.14.jar = 1701431559000
+/Users/vaibhavsingh/.m2/repository/org/apache/logging/log4j/log4j-core/2.20.0/log4j-core-2.20.0.jar = 1676697665000
+/Users/vaibhavsingh/.m2/repository/org/apache/logging/log4j/log4j-api/2.20.0/log4j-api-2.20.0.jar = 1723635053478
+/Users/vaibhavsingh/.m2/repository/log4j/log4j/1.2.17/log4j-1.2.17.jar = 1338025419000
 /Users/vaibhavsingh/.m2/repository/jakarta/validation/jakarta.validation-api/3.0.2/jakarta.validation-api-3.0.2.jar = 1653588099000
 /Users/vaibhavsingh/.m2/repository/org/projectlombok/lombok/1.18.46/lombok-1.18.46.jar = 1776813716000
 /Users/vaibhavsingh/.m2/repository/org/junit/jupiter/junit-jupiter-api/5.9.3/junit-jupiter-api-5.9.3.jar = 1723635053862
@@ -72,21 +79,21 @@ org.teche.merv.client.logging
 /Users/vaibhavsingh/.m2/repository/org/testng/testng/7.10.2/testng-7.10.2.jar = 1714310346000
 /Users/vaibhavsingh/.m2/repository/com/beust/jcommander/1.82/jcommander-1.82.jar = 1641875222000
 /Users/vaibhavsingh/Desktop/teche-apps/merv/merv-client/src/main/java = 1756115145906
-/Users/vaibhavsingh/Desktop/teche-apps/merv/merv-client/target/generated-sources/annotations = 1778318224377
-/Users/vaibhavsingh/Desktop/teche-apps/merv/merv-client/target/apidocs/constant-values.html = 1778871144001
-/Users/vaibhavsingh/Desktop/teche-apps/merv/merv-client/target/apidocs/tag-search-index.js = 1778871144070
-/Users/vaibhavsingh/Desktop/teche-apps/merv/merv-client/target/apidocs/overview-tree.html = 1778871144055
-/Users/vaibhavsingh/Desktop/teche-apps/merv/merv-client/target/apidocs/module-search-index.js = 1778871144069
-/Users/vaibhavsingh/Desktop/teche-apps/merv/merv-client/target/apidocs/index.html = 1778871144058
-/Users/vaibhavsingh/Desktop/teche-apps/merv/merv-client/target/apidocs/package-search-index.js = 1778871144069
-/Users/vaibhavsingh/Desktop/teche-apps/merv/merv-client/target/apidocs/serialized-form.html = 1778871144004
-/Users/vaibhavsingh/Desktop/teche-apps/merv/merv-client/target/apidocs/index-all.html = 1778871144083
-/Users/vaibhavsingh/Desktop/teche-apps/merv/merv-client/target/apidocs/allpackages-index.html = 1778871144069
-/Users/vaibhavsingh/Desktop/teche-apps/merv/merv-client/target/apidocs/deprecated-list.html = 1778871144057
-/Users/vaibhavsingh/Desktop/teche-apps/merv/merv-client/target/apidocs/member-search-index.js = 1778871144070
-/Users/vaibhavsingh/Desktop/teche-apps/merv/merv-client/target/apidocs/overview-summary.html = 1778871144085
-/Users/vaibhavsingh/Desktop/teche-apps/merv/merv-client/target/apidocs/help-doc.html = 1778871144086
-/Users/vaibhavsingh/Desktop/teche-apps/merv/merv-client/target/apidocs/element-list = 1778871143981
-/Users/vaibhavsingh/Desktop/teche-apps/merv/merv-client/target/apidocs/search.html = 1778871144084
-/Users/vaibhavsingh/Desktop/teche-apps/merv/merv-client/target/apidocs/allclasses-index.html = 1778871144068
-/Users/vaibhavsingh/Desktop/teche-apps/merv/merv-client/target/apidocs/type-search-index.js = 1778871144069
+/Users/vaibhavsingh/Desktop/teche-apps/merv/merv-client/target/generated-sources/annotations = 1785921793980
+/Users/vaibhavsingh/Desktop/teche-apps/merv/merv-client/target/apidocs/constant-values.html = 1786006722062
+/Users/vaibhavsingh/Desktop/teche-apps/merv/merv-client/target/apidocs/tag-search-index.js = 1786006722183
+/Users/vaibhavsingh/Desktop/teche-apps/merv/merv-client/target/apidocs/overview-tree.html = 1786006722163
+/Users/vaibhavsingh/Desktop/teche-apps/merv/merv-client/target/apidocs/module-search-index.js = 1786006722181
+/Users/vaibhavsingh/Desktop/teche-apps/merv/merv-client/target/apidocs/index.html = 1786006722165
+/Users/vaibhavsingh/Desktop/teche-apps/merv/merv-client/target/apidocs/package-search-index.js = 1786006722182
+/Users/vaibhavsingh/Desktop/teche-apps/merv/merv-client/target/apidocs/serialized-form.html = 1786006722066
+/Users/vaibhavsingh/Desktop/teche-apps/merv/merv-client/target/apidocs/index-all.html = 1786006722203
+/Users/vaibhavsingh/Desktop/teche-apps/merv/merv-client/target/apidocs/allpackages-index.html = 1786006722181
+/Users/vaibhavsingh/Desktop/teche-apps/merv/merv-client/target/apidocs/deprecated-list.html = 1786006722164
+/Users/vaibhavsingh/Desktop/teche-apps/merv/merv-client/target/apidocs/member-search-index.js = 1786006722183
+/Users/vaibhavsingh/Desktop/teche-apps/merv/merv-client/target/apidocs/overview-summary.html = 1786006722205
+/Users/vaibhavsingh/Desktop/teche-apps/merv/merv-client/target/apidocs/help-doc.html = 1786006722206
+/Users/vaibhavsingh/Desktop/teche-apps/merv/merv-client/target/apidocs/element-list = 1786006722026
+/Users/vaibhavsingh/Desktop/teche-apps/merv/merv-client/target/apidocs/search.html = 1786006722204
+/Users/vaibhavsingh/Desktop/teche-apps/merv/merv-client/target/apidocs/allclasses-index.html = 1786006722180
+/Users/vaibhavsingh/Desktop/teche-apps/merv/merv-client/target/apidocs/type-search-index.js = 1786006722182

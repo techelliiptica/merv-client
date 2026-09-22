@@ -69,6 +69,33 @@ mvn clean install
 mvn assembly:single
 ```
 
+## `merv-client` CLI (standalone executable)
+
+Download the **`merv-client-api-*-cli.zip`** distribution from the MERV portal (or build with `mvn package -Dgpg.skip=true`).
+
+```
+merv-client-4.0.21/
+  bin/merv-client       # macOS / Linux
+  bin/merv-client.bat   # Windows
+  lib/merv-client.jar   # fat JAR (Java 17+)
+```
+
+Add `bin` to your `PATH`, then use the same commands as `npx merv-client`:
+
+```bash
+merv-client doctor setup
+merv-client doctor setup-log
+merv-client show-report
+merv-client show-report --host 0.0.0.0
+merv-client show-logs
+```
+
+Or run the JAR directly:
+
+```bash
+java -jar lib/merv-client.jar show-report
+```
+
 ## 🔧 Configuration
 
 ### Basic Setup

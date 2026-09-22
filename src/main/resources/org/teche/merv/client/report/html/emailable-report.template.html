@@ -1,0 +1,667 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>MERV Emailable Report</title>
+  <style>
+    :root {
+      --merv-red: #c20000;
+      --grad: linear-gradient(135deg, #e90101, #c20000);
+      --bg: #f3f4f6;
+      --card: #fff;
+      --border: #e5e7eb;
+      --text: #111827;
+      --muted: #6b7280;
+      --pass: #059669;
+      --fail: #c20000;
+      --skip: #d97706;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      color: var(--text);
+      background: radial-gradient(900px 420px at 8% -12%, rgba(233,1,1,.1), transparent 55%), var(--bg);
+      font-family: "Segoe UI", -apple-system, BlinkMacSystemFont, Helvetica, Arial, sans-serif;
+    }
+    .app { max-width: 1180px; margin: 0 auto; padding: 16px; }
+    .topbar {
+      display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;
+      background: var(--card); border: 1px solid var(--border); border-radius: 14px;
+      padding: 14px 18px; margin-bottom: 14px;
+      box-shadow: 0 8px 28px rgba(17,24,39,.06);
+    }
+    .brand { display: flex; align-items: center; gap: 12px; min-width: 0; }
+    .brand img { width: 44px; height: 44px; object-fit: contain; }
+    .brand h1 { margin: 0; font-size: 20px; line-height: 1.25; word-break: break-word; }
+    .brand .sub { margin: 2px 0 0; font-size: 12px; color: var(--muted); }
+    .top-right { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; text-align: right; }
+    .overall-pill {
+      display: inline-flex; align-items: center; gap: 8px; padding: 7px 12px; border-radius: 999px;
+      color: #fff; font-size: 12px; font-weight: 700; background: var(--grad);
+    }
+    .overall-pill.passed { background: linear-gradient(135deg,#10b981,#059669); }
+    .machine-banner {
+      max-width: 380px; font-size: 12px; color: #374151; background: #f9fafb;
+      border: 1px solid var(--border); border-radius: 8px; padding: 5px 9px; word-break: break-word;
+    }
+    .nav { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 14px; }
+    .nav button {
+      appearance: none; border: 1px solid var(--border); background: #fff; color: #374151;
+      border-radius: 999px; padding: 8px 14px; font: inherit; font-size: 13px; font-weight: 700; cursor: pointer;
+    }
+    .nav button.active { background: var(--grad); border-color: var(--merv-red); color: #fff; }
+    .view { display: none; }
+    .view.active { display: block; }
+    .grid-4 { display: grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap: 10px; margin-bottom: 14px; }
+    .grid-3 { display: grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: 12px; margin-bottom: 14px; }
+    @media (max-width: 900px) {
+      .grid-4, .grid-3 { grid-template-columns: 1fr 1fr; }
+      .top-right { align-items: flex-start; text-align: left; }
+    }
+    @media (max-width: 560px) {
+      .grid-4, .grid-3 { grid-template-columns: 1fr; }
+    }
+    .stat {
+      background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 14px;
+    }
+    .stat .label { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); font-weight: 700; }
+    .stat .value { margin-top: 6px; font-size: 20px; font-weight: 750; }
+    .stat .value.time-stack { font-size: 15px; line-height: 1.35; font-weight: 700; }
+    .stat .value.time-stack .time-line { display: inline-block; margin-top: 2px; font-size: 13px; font-weight: 650; color: #374151; }
+    .panel {
+      background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 14px;
+      margin-bottom: 14px;
+    }
+    .panel h2 { margin: 0 0 12px; font-size: 15px; }
+    .chart-wrap { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+    .legend { list-style: none; margin: 0; padding: 0; font-size: 13px; }
+    .legend li { display: flex; align-items: center; gap: 8px; margin: 0 0 6px; }
+    .swatch { width: 10px; height: 10px; border-radius: 999px; display: inline-block; }
+    .swatch.passed { background: var(--pass); }
+    .swatch.failed { background: var(--fail); }
+    .swatch.skipped { background: var(--skip); }
+    .swatch.other { background: #9ca3af; }
+    .filters {
+      display: flex; flex-direction: column; gap: 10px; margin-bottom: 12px;
+      background: #fafafa; border: 1px solid var(--border); border-radius: 12px; padding: 12px;
+    }
+    .filter-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+    .filter-label {
+      min-width: 70px; font-size: 11px; text-transform: uppercase; letter-spacing: .04em;
+      color: var(--muted); font-weight: 700;
+    }
+    .chip, .card-btn {
+      appearance: none; border: 1px solid #d1d5db; background: #fff; color: #374151;
+      font: inherit; font-size: 12px; font-weight: 650; padding: 6px 10px; border-radius: 999px; cursor: pointer;
+    }
+    .chip.active, .chip[aria-pressed="true"] {
+      background: #9f0000; border-color: #7f0000; color: #fff;
+    }
+    .chip.tag-chip.active, .chip.tag-chip[aria-pressed="true"] {
+      background: #111827; border-color: #030712; color: #fff;
+    }
+    .chip.machine-chip.active, .chip.machine-chip[aria-pressed="true"] {
+      background: #1f2937; border-color: #111827; color: #fff;
+    }
+    .search {
+      flex: 1; min-width: 180px; border: 1px solid #d1d5db; border-radius: 999px;
+      padding: 8px 14px; font-size: 13px; outline: none;
+    }
+    .search:focus { border-color: var(--merv-red); box-shadow: 0 0 0 3px rgba(194,0,0,.12); }
+    .summary-cards { display: grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap: 8px; margin-bottom: 12px; }
+    .card-btn {
+      width: 100%; text-align: left; border-radius: 12px; padding: 10px 12px; border-width: 2px;
+      color: #111827;
+    }
+    .card-btn b { display: block; font-size: 22px; color: inherit; }
+    .card-btn span { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: #4b5563; font-weight: 700; }
+    .card-btn.passed { background: #ecfdf5; border-color: #a7f3d0; color: #065f46; }
+    .card-btn.failed { background: #fef2f2; border-color: #fecaca; color: #991b1b; }
+    .card-btn.skipped { background: #fff7ed; border-color: #fed7aa; color: #9a3412; }
+    .card-btn.active { color: #fff !important; box-shadow: 0 0 0 3px rgba(194,0,0,.2); }
+    .card-btn.active b, .card-btn.active span { color: #fff !important; }
+    .card-btn.active:not(.passed):not(.failed):not(.skipped) {
+      background: #9f0000; border-color: #7f0000;
+    }
+    .card-btn.passed.active { background: #047857; border-color: #065f46; }
+    .card-btn.failed.active { background: #b91c1c; border-color: #7f1d1d; }
+    .card-btn.skipped.active { background: #b45309; border-color: #92400e; }
+    .filter-result { font-size: 12px; color: var(--muted); margin: 0 0 10px; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th, td { text-align: left; padding: 10px 8px; border-bottom: 1px solid #eee; vertical-align: top; }
+    th { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); background: #f9fafb; }
+    .pct-wrap { position: relative; min-width: 70px; height: 18px; background: #f3f4f6; border-radius: 999px; overflow: hidden; }
+    .pct-bar { position: absolute; inset: 0 auto 0 0; background: #10b981; }
+    .pct-label { position: relative; z-index: 1; font-size: 11px; font-weight: 700; padding: 0 6px; line-height: 18px; }
+    .linkish {
+      appearance: none; border: 0; background: transparent; color: var(--merv-red);
+      font: inherit; font-weight: 700; cursor: pointer; padding: 0; text-align: left;
+    }
+    .tl-row { display: grid; grid-template-columns: minmax(120px, 28%) 1fr 70px; gap: 8px; align-items: center; margin: 0 0 8px; }
+    .tl-name { font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .tl-track { height: 10px; background: #f3f4f6; border-radius: 999px; overflow: hidden; }
+    .tl-bar { height: 100%; border-radius: 999px; background: #9ca3af; }
+    .tl-bar.passed { background: var(--pass); }
+    .tl-bar.failed { background: var(--fail); }
+    .tl-bar.skipped { background: var(--skip); }
+    .tl-dur { font-size: 11px; color: var(--muted); text-align: right; }
+    .collapse-panel { padding: 0; overflow: hidden; }
+    .collapse-toggle {
+      width: 100%; appearance: none; border: 0; background: transparent; cursor: pointer;
+      display: flex; align-items: center; justify-content: space-between; gap: 12px;
+      padding: 14px; text-align: left; font: inherit;
+    }
+    .collapse-toggle:hover { background: #fafafa; }
+    .collapse-toggle .ct-title { font-size: 15px; font-weight: 700; margin: 0; }
+    .collapse-toggle .ct-meta { font-size: 12px; color: var(--muted); font-weight: 600; }
+    .collapse-toggle .ct-left { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; min-width: 0; }
+    .collapse-toggle .chev {
+      flex-shrink: 0; width: 22px; height: 22px; border-radius: 999px; border: 1px solid #e5e7eb;
+      display: inline-flex; align-items: center; justify-content: center; color: #6b7280; font-size: 12px;
+      transition: transform .15s ease;
+    }
+    .collapse-panel.open .chev { transform: rotate(180deg); }
+    .collapse-body { display: none; padding: 0 14px 14px; border-top: 1px solid #f3f4f6; }
+    .collapse-panel.open .collapse-body { display: block; }
+    .case-card {
+      border: 1px solid var(--border); border-radius: 12px; background: #fff; margin-bottom: 8px; overflow: hidden;
+    }
+    .case-card.failed { border-color: #fecaca; background: #fffafa; }
+    .case-card.hidden, .tl-row.hidden, .fail-card.hidden, .tag-stat-row.hidden { display: none !important; }
+    .case-head {
+      width: 100%; appearance: none; border: 0; background: transparent; cursor: pointer;
+      display: flex; align-items: flex-start; gap: 10px; padding: 12px 14px; text-align: left; font: inherit;
+    }
+    .case-idx { color: #9ca3af; font-weight: 700; min-width: 24px; padding-top: 2px; }
+    .case-main { flex: 1; min-width: 0; }
+    .case-title { display: block; font-weight: 700; margin-bottom: 4px; }
+    .case-meta { display: block; font-size: 12px; color: var(--muted); }
+    .case-body { padding: 0 14px 14px 48px; border-top: 1px solid #f3f4f6; }
+    .case-tags { margin: 10px 0; }
+    .case-reason, .case-steps { margin-top: 10px; font-size: 13px; }
+    .tag {
+      display: inline-block; margin: 0 4px 4px 0; padding: 2px 8px; border-radius: 999px;
+      background: #f3f4f6; border: 1px solid #e5e7eb; font-size: 11px; font-weight: 650; color: #374151; cursor: pointer;
+    }
+    .pill {
+      display: inline-block; padding: 3px 9px; border-radius: 999px; font-size: 11px; font-weight: 700; flex-shrink: 0;
+    }
+    .pill.passed { background: #d1fae5; color: #065f46; }
+    .pill.failed { background: #fee2e2; color: #991b1b; }
+    .pill.skipped { background: #ffedd5; color: #9a3412; }
+    .pill.other { background: #e5e7eb; color: #374151; }
+    .step-list { margin: 8px 0 0; padding-left: 18px; }
+    .step { margin: 0 0 8px; }
+    .step-name { margin-left: 6px; }
+    .step-err { margin-top: 4px; color: #991b1b; font-size: 12px; white-space: pre-wrap; }
+    .fail-card {
+      border: 1px solid #fecaca; background: #fff5f5; border-radius: 12px; padding: 14px; margin-bottom: 10px;
+    }
+    .fail-card h3 { margin: 0 0 6px; font-size: 15px; }
+    .fail-pre {
+      white-space: pre-wrap; background: #fff; border: 1px solid #fecaca; border-radius: 8px;
+      padding: 10px; font-size: 12px; overflow: auto;
+    }
+    .empty { display: none; padding: 24px; text-align: center; color: var(--muted); }
+    .empty.show { display: block; }
+    .muted { color: var(--muted); }
+    .small { font-size: 12px; }
+    .foot { margin-top: 8px; font-size: 12px; color: #9ca3af; display: flex; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+  </style>
+</head>
+<body>
+  <div class="app" id="app"><p class="muted">Loading emailable report…</p></div>
+  <script>
+    window.__MERV_EMAILABLE_REPORT__ = /*__MERV_EMAILABLE_JSON__*/null;
+    window.__MERV_EMAILABLE_LOGO__ = /*__MERV_EMAILABLE_LOGO__*/"";
+  </script>
+  <script>
+(function () {
+  var report = window.__MERV_EMAILABLE_REPORT__;
+  var LOGO = window.__MERV_EMAILABLE_LOGO__ || 'https://merv.online/images/logo-red.png';
+  var MONTH_SHORT = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+
+  function esc(s) {
+    return String(s == null ? '' : s)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  }
+  function statusClass(status) {
+    var s = String(status || '').toUpperCase();
+    if (s === 'PASSED') return 'passed';
+    if (s === 'FAILED') return 'failed';
+    if (s === 'SKIPPED') return 'skipped';
+    return 'other';
+  }
+  function pad2(n) { return String(n).padStart(2, '0'); }
+  function parseMs(v) {
+    if (!v) return null;
+    var n = Date.parse(String(v));
+    return Number.isFinite(n) ? n : null;
+  }
+  function formatDuration(ms) {
+    if (ms == null || !Number.isFinite(ms) || ms < 0) return '—';
+    var totalSec = Math.round(ms / 1000);
+    var h = Math.floor(totalSec / 3600);
+    var m = Math.floor((totalSec % 3600) / 60);
+    var s = totalSec % 60;
+    if (h > 0) return h + 'h ' + m + 'm ' + s + 's';
+    if (m > 0) return m + 'm ' + s + 's';
+    if (ms < 1000) return Math.max(1, Math.round(ms)) + 'ms';
+    return s + 's';
+  }
+  function timezoneAbbrev(d) {
+    try {
+      var part = new Intl.DateTimeFormat('en-US', { timeZoneName: 'short' })
+        .formatToParts(d).find(function (p) { return p.type === 'timeZoneName'; });
+      return (part && part.value && part.value.trim()) || '';
+    } catch (e) { return ''; }
+  }
+  function formatClockLines(iso) {
+    if (!iso) return null;
+    var d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return null;
+    var date = pad2(d.getDate()) + ' ' + MONTH_SHORT[d.getMonth()] + ' ' + d.getFullYear();
+    var hours = d.getHours();
+    var ampm = hours >= 12 ? 'PM' : 'AM';
+    hours = hours % 12;
+    if (hours === 0) hours = 12;
+    var timeCore = hours + ':' + pad2(d.getMinutes()) + ':' + pad2(d.getSeconds()) + ampm;
+    var tz = timezoneAbbrev(d);
+    return { date: date, time: tz ? timeCore + ' ' + tz : timeCore };
+  }
+  function formatClock(iso) {
+    var parts = formatClockLines(iso);
+    if (!parts) return iso ? String(iso) : '—';
+    return parts.date + ' · ' + parts.time;
+  }
+  function formatClockHtml(iso) {
+    var parts = formatClockLines(iso);
+    if (!parts) return esc(iso || '—');
+    return esc(parts.date) + '<br/><span class="time-line">' + esc(parts.time) + '</span>';
+  }
+  function formatExportDate(raw) {
+    if (!raw || !String(raw).trim()) return '—';
+    var parts = formatClockLines(raw);
+    if (parts) return parts.date + ' · ' + parts.time;
+    return String(raw);
+  }
+  function caseDurationMs(tc) {
+    var a = parseMs(tc.startTime);
+    var b = parseMs(tc.endTime);
+    if (a == null || b == null || b < a) return null;
+    return b - a;
+  }
+  function failureReasonFor(tc) {
+    var direct = String(tc.failureReason || '').trim();
+    if (direct) return direct;
+    var bits = [];
+    (tc.testSteps || []).forEach(function (s) {
+      if (String(s.status || '').toUpperCase() !== 'FAILED') return;
+      var msg = String(s.errorMessage || s.actual || '').trim();
+      if (msg) bits.push((s.teststepName || 'Step') + ': ' + msg);
+    });
+    return bits.join('\n') || '—';
+  }
+  function renderSteps(steps) {
+    if (!steps || !steps.length) return '<p class="muted small">No steps recorded.</p>';
+    return '<ol class="step-list">' + steps.map(function (s) {
+      var st = String(s.status || 'UNKNOWN').toUpperCase();
+      var err = String(s.errorMessage || '').trim();
+      return '<li class="step ' + statusClass(st) + '">' +
+        '<span class="pill ' + statusClass(st) + '">' + esc(st) + '</span>' +
+        '<span class="step-name">' + esc(s.teststepName || 'Step') + '</span>' +
+        (err ? '<div class="step-err">' + esc(err) + '</div>' : '') +
+        '</li>';
+    }).join('\n') + '</ol>';
+  }
+
+  if (!report || !report.testSuite) {
+    document.getElementById('app').innerHTML = '<p class="muted">No report data.</p>';
+    return;
+  }
+
+  var suite = report.testSuite;
+  var cases = suite.testCases || [];
+  var counts = { total: cases.length, passed: 0, failed: 0, skipped: 0, other: 0 };
+  cases.forEach(function (tc) {
+    var st = String(tc.status || '').toUpperCase();
+    if (st === 'PASSED') counts.passed += 1;
+    else if (st === 'FAILED') counts.failed += 1;
+    else if (st === 'SKIPPED') counts.skipped += 1;
+    else counts.other += 1;
+  });
+  var stepCounts = { total: 0, passed: 0, failed: 0, skipped: 0 };
+  cases.forEach(function (tc) {
+    (tc.testSteps || []).forEach(function (s) {
+      stepCounts.total += 1;
+      var st = String(s.status || '').toUpperCase();
+      if (st === 'PASSED') stepCounts.passed += 1;
+      else if (st === 'FAILED') stepCounts.failed += 1;
+      else if (st === 'SKIPPED') stepCounts.skipped += 1;
+    });
+  });
+  var tagSet = {};
+  var machineSet = {};
+  var tagMap = {};
+  cases.forEach(function (tc) {
+    var st = String(tc.status || '').toUpperCase();
+    var m = String(tc.executionMachine || '').trim();
+    if (m) machineSet[m] = true;
+    (tc.tags || []).forEach(function (t) {
+      var v = String(t || '').trim();
+      if (!v) return;
+      tagSet[v] = true;
+      if (!tagMap[v]) tagMap[v] = { name: v, passed: 0, failed: 0, skipped: 0, other: 0, total: 0 };
+      tagMap[v].total += 1;
+      if (st === 'PASSED') tagMap[v].passed += 1;
+      else if (st === 'FAILED') tagMap[v].failed += 1;
+      else if (st === 'SKIPPED') tagMap[v].skipped += 1;
+      else tagMap[v].other += 1;
+    });
+  });
+  var allTags = Object.keys(tagSet).sort();
+  var machines = Object.keys(machineSet).sort();
+  var tagStats = Object.keys(tagMap).sort().map(function (k) { return tagMap[k]; });
+  var overall = counts.failed > 0 ? 'FAILED' : (counts.passed === counts.total && counts.total > 0 ? 'PASSED' : 'COMPLETED');
+  var overallClass = statusClass(overall);
+  var suiteStart = suite.startTime;
+  var suiteEnd = suite.endTime;
+  var suiteDur = (function () {
+    var a = parseMs(suiteStart), b = parseMs(suiteEnd);
+    if (a == null || b == null || b < a) return null;
+    return b - a;
+  })();
+  var machineLabel = machines.length === 0 ? 'Unknown machine' : machines.length === 1 ? machines[0] : machines.length + ' machines';
+  var passPct = counts.total ? Math.round((counts.passed / counts.total) * 100) : 0;
+  var failPct = counts.total ? Math.round((counts.failed / counts.total) * 100) : 0;
+  var maxCaseDur = Math.max(1);
+  cases.forEach(function (tc) {
+    var d = caseDurationMs(tc);
+    if (d != null && d > maxCaseDur) maxCaseDur = d;
+  });
+
+  var title = suite.title || 'MERV Emailable Report';
+  document.title = title;
+
+  function tagTableRowsHtml() {
+    return tagStats.map(function (t) {
+      var pct = t.total ? Math.round((t.passed / t.total) * 100) : 0;
+      return '<tr class="tag-stat-row" data-tag="' + esc(t.name) + '" data-tags="' + esc(t.name.toLowerCase()) + '">' +
+        '<td><button type="button" class="linkish tag-filter-btn" data-tag="' + esc(t.name) + '">' + esc(t.name) + '</button></td>' +
+        '<td>' + t.passed + '</td><td>' + t.failed + '</td><td>' + t.skipped + '</td><td>' + t.other + '</td>' +
+        '<td><div class="pct-wrap"><span class="pct-bar" style="width:' + pct + '%"></span><span class="pct-label">' + pct + '%</span></div></td></tr>';
+    }).join('\n');
+  }
+  var tagTableRows = tagTableRowsHtml();
+  var tagTableBlock = tagStats.length
+    ? '<div style="overflow:auto"><table><thead><tr><th>Name</th><th>Passed</th><th>Failed</th><th>Skipped</th><th>Others</th><th>Passed %</th></tr></thead><tbody>' + tagTableRows + '</tbody></table></div>'
+    : '<p class="muted">No tags on scenarios.</p>';
+
+  var timelineBars = cases.map(function (tc, i) {
+    var dur = caseDurationMs(tc);
+    var st = String(tc.status || 'UNKNOWN').toUpperCase();
+    var pct = dur != null ? Math.max(2, Math.round((dur / maxCaseDur) * 100)) : 2;
+    var tags = (tc.tags || []).map(function (t) { return String(t).trim().toLowerCase(); }).filter(Boolean).join('|');
+    return '<div class="tl-row" data-status="' + esc(st) + '" data-tags="' + esc(tags) + '">' +
+      '<div class="tl-name" title="' + esc(tc.testcaseName || '') + '">' + esc(tc.testcaseName || ('Case ' + (i + 1))) + '</div>' +
+      '<div class="tl-track"><div class="tl-bar ' + statusClass(st) + '" style="width:' + pct + '%"></div></div>' +
+      '<div class="tl-dur">' + esc(formatDuration(dur)) + '</div></div>';
+  }).join('\n');
+
+  var scenarioCards = cases.map(function (tc, i) {
+    var st = String(tc.status || 'UNKNOWN').toUpperCase();
+    var reason = failureReasonFor(tc);
+    var tags = (tc.tags || []).map(function (t) { return String(t || '').trim(); }).filter(Boolean);
+    var tagsHtml = tags.map(function (t) {
+      return '<button type="button" class="tag tag-filter-btn" data-tag="' + esc(t) + '">' + esc(t) + '</button>';
+    }).join(' ');
+    var machine = String(tc.executionMachine || '').trim() || '—';
+    var dur = formatDuration(caseDurationMs(tc));
+    return '<article class="case-card ' + statusClass(st) + '" data-status="' + esc(st) + '" data-tags="' + esc(tags.join('|').toLowerCase()) + '" data-machine="' + esc(machine.toLowerCase()) + '" data-id="case-' + i + '">' +
+      '<button type="button" class="case-head" aria-expanded="false">' +
+      '<span class="case-idx">' + (i + 1) + '</span>' +
+      '<span class="case-main"><span class="case-title">' + esc(tc.testcaseName || 'Untitled') + '</span>' +
+      '<span class="case-meta">' + esc(formatClock(tc.startTime)) + ' · ' + esc(dur) + ' · ' + esc(machine) + '</span></span>' +
+      '<span class="pill ' + statusClass(st) + '">' + esc(st) + '</span></button>' +
+      '<div class="case-body" hidden>' +
+      '<div class="case-tags">' + (tagsHtml || '<span class="muted">No tags</span>') + '</div>' +
+      '<div class="case-reason"><strong>Failure reason</strong><div>' + esc(reason).replace(/\n/g, '<br/>') + '</div></div>' +
+      '<div class="case-steps"><strong>Steps</strong>' + renderSteps(tc.testSteps) + '</div></div></article>';
+  }).join('\n');
+
+  var failureCards = cases.filter(function (tc) { return String(tc.status || '').toUpperCase() === 'FAILED'; }).map(function (tc, i) {
+    var reason = failureReasonFor(tc);
+    var tags = (tc.tags || []).map(function (t) { return String(t || '').trim(); }).filter(Boolean);
+    return '<div class="fail-card" data-status="FAILED" data-tags="' + esc(tags.join('|').toLowerCase()) + '">' +
+      '<h3>' + esc(tc.testcaseName || ('Failure ' + (i + 1))) + '</h3>' +
+      '<p class="case-meta">' + esc(String(tc.executionMachine || '—')) + ' · ' + esc(formatClock(tc.endTime)) + '</p>' +
+      '<pre class="fail-pre">' + esc(reason) + '</pre>' +
+      '<div>' + tags.map(function (t) { return '<span class="tag">' + esc(t) + '</span>'; }).join(' ') + '</div></div>';
+  }).join('\n');
+
+  var tagButtons = allTags.map(function (t) {
+    return '<button type="button" class="chip tag-chip" data-tag="' + esc(t) + '" aria-pressed="false">' + esc(t) + '</button>';
+  }).join('\n');
+  var machineChips = machines.length > 1
+    ? machines.map(function (m) {
+        return '<button type="button" class="chip machine-chip" data-machine="' + esc(m) + '" aria-pressed="false">' + esc(m) + '</button>';
+      }).join('\n')
+    : '';
+
+  document.getElementById('app').innerHTML =
+    '<header class="topbar">' +
+      '<div class="brand"><img src="' + esc(LOGO) + '" alt="Merv" onerror="this.style.display=\'none\'" />' +
+      '<div><h1>' + esc(title) + '</h1><p class="sub">Emailable · offline interactive report</p></div></div>' +
+      '<div class="top-right"><div class="overall-pill ' + overallClass + '">Overall · ' + esc(overall) + '</div>' +
+      '<div class="machine-banner">Executed on · <strong>' + esc(machineLabel) + '</strong></div></div></header>' +
+    '<nav class="nav" aria-label="Report views">' +
+      '<button type="button" class="nav-btn active" data-view="dashboard">Dashboard</button>' +
+      '<button type="button" class="nav-btn" data-view="scenarios">Scenarios</button>' +
+      '<button type="button" class="nav-btn" data-view="failures">Failures (' + counts.failed + ')</button>' +
+      '<button type="button" class="nav-btn" data-view="tags">Tags (' + allTags.length + ')</button></nav>' +
+    '<section class="view active" id="view-dashboard">' +
+      '<div class="grid-4">' +
+      '<div class="stat"><div class="label">Started</div><div class="value time-stack">' + formatClockHtml(suiteStart) + '</div></div>' +
+      '<div class="stat"><div class="label">Ended</div><div class="value time-stack">' + formatClockHtml(suiteEnd) + '</div></div>' +
+      '<div class="stat"><div class="label">Duration</div><div class="value">' + esc(formatDuration(suiteDur)) + '</div></div>' +
+      '<div class="stat"><div class="label">Pass rate</div><div class="value">' + passPct + '%</div></div></div>' +
+      '<div class="grid-3"><div class="panel"><h2>Scenarios</h2><div class="chart-wrap">' +
+      '<canvas id="scenario-chart" width="140" height="140"></canvas><ul class="legend">' +
+      '<li><span class="swatch passed"></span>Passed · <b>' + counts.passed + '</b> (' + passPct + '%)</li>' +
+      '<li><span class="swatch failed"></span>Failed · <b>' + counts.failed + '</b> (' + failPct + '%)</li>' +
+      '<li><span class="swatch skipped"></span>Skipped · <b>' + counts.skipped + '</b></li>' +
+      '<li><span class="swatch other"></span>Other · <b>' + counts.other + '</b></li></ul></div></div>' +
+      '<div class="panel"><h2>Steps</h2><ul class="legend">' +
+      '<li><span class="swatch passed"></span>Passed · <b>' + stepCounts.passed + '</b></li>' +
+      '<li><span class="swatch failed"></span>Failed · <b>' + stepCounts.failed + '</b></li>' +
+      '<li><span class="swatch skipped"></span>Skipped · <b>' + stepCounts.skipped + '</b></li>' +
+      '<li>Total · <b>' + stepCounts.total + '</b></li></ul></div>' +
+      '<div class="panel"><h2>Environment</h2><ul class="legend">' +
+      '<li>Machine · <b>' + esc(machineLabel) + '</b></li>' +
+      '<li>Tags · <b>' + allTags.length + '</b></li>' +
+      '<li>Scenarios · <b>' + counts.total + '</b></li>' +
+      '<li>Export · <b>' + esc(formatExportDate(report.exportDate)) + '</b></li></ul></div></div>' +
+      '<div class="panel collapse-panel" id="timeline-panel">' +
+      '<button type="button" class="collapse-toggle" id="timeline-toggle" aria-expanded="false" aria-controls="timeline-body">' +
+      '<span class="ct-left"><span class="ct-title">Timeline</span>' +
+      '<span class="ct-meta">' + counts.total + ' scenarios · ' + esc(formatDuration(suiteDur)) + '</span></span>' +
+      '<span class="chev" aria-hidden="true">▾</span></button>' +
+      '<div class="collapse-body" id="timeline-body" hidden>' + (timelineBars || '<p class="muted">No timeline data.</p>') + '</div></div>' +
+      '<div class="panel"><h2>Tags overview</h2>' + tagTableBlock + '</div></section>' +
+    '<section class="view" id="view-scenarios">' +
+      '<div class="summary-cards" role="group" aria-label="Status filters">' +
+      '<button type="button" class="card-btn active" data-status="ALL"><b>' + counts.total + '</b><span>Total</span></button>' +
+      '<button type="button" class="card-btn passed" data-status="PASSED"><b>' + counts.passed + '</b><span>Passed</span></button>' +
+      '<button type="button" class="card-btn failed" data-status="FAILED"><b>' + counts.failed + '</b><span>Failed</span></button>' +
+      '<button type="button" class="card-btn skipped" data-status="SKIPPED"><b>' + counts.skipped + '</b><span>Skipped</span></button></div>' +
+      '<div class="filters"><div class="filter-row"><span class="filter-label">Status</span>' +
+      '<button type="button" class="chip status-chip active" data-status="ALL" aria-pressed="true">All</button>' +
+      '<button type="button" class="chip status-chip" data-status="PASSED" aria-pressed="false">Passed</button>' +
+      '<button type="button" class="chip status-chip" data-status="FAILED" aria-pressed="false">Failed</button>' +
+      '<button type="button" class="chip status-chip" data-status="SKIPPED" aria-pressed="false">Skipped</button>' +
+      '<input class="search" id="search-input" type="search" placeholder="Search scenarios, steps, failure, machine…" /></div>' +
+      '<div class="filter-row"' + (allTags.length ? '' : ' hidden') + '><span class="filter-label">Tags</span>' +
+      '<button type="button" class="chip tag-chip active" data-tag="" aria-pressed="true">All tags</button>' + tagButtons + '</div>' +
+      (machineChips ? '<div class="filter-row"><span class="filter-label">Machine</span>' +
+        '<button type="button" class="chip machine-chip active" data-machine="" aria-pressed="true">All machines</button>' + machineChips + '</div>' : '') +
+      '</div>' +
+      '<p class="filter-result" id="filter-result">Showing ' + counts.total + ' of ' + counts.total + ' scenarios</p>' +
+      '<div id="scenario-list">' + (scenarioCards || '<p class="muted">No scenarios recorded.</p>') + '</div>' +
+      '<div class="empty" id="empty-state">No scenarios match the current filters.</div></section>' +
+    '<section class="view" id="view-failures">' + (failureCards || '<div class="panel"><p class="muted">No failures.</p></div>') + '</section>' +
+    '<section class="view" id="view-tags"><div class="panel"><h2>Tag-based results</h2>' +
+      '<p class="muted small">Click a tag to open Scenarios filtered by that tag.</p>' + tagTableBlock + '</div></section>' +
+    '<div class="foot"><span>Generated by MERV · emailable-report.html</span><span>' + esc(machineLabel) + '</span></div>';
+
+  var chartData = { passed: counts.passed, failed: counts.failed, skipped: counts.skipped, other: counts.other };
+  function drawDonut(canvas, data) {
+    if (!canvas || !canvas.getContext) return;
+    var ctx = canvas.getContext('2d');
+    var parts = [
+      { v: data.passed || 0, c: '#059669' },
+      { v: data.failed || 0, c: '#c20000' },
+      { v: data.skipped || 0, c: '#d97706' },
+      { v: data.other || 0, c: '#9ca3af' }
+    ];
+    var total = parts.reduce(function (a, p) { return a + p.v; }, 0);
+    var drawTotal = total || 1;
+    var cx = canvas.width / 2, cy = canvas.height / 2, r = Math.min(cx, cy) - 6;
+    var start = -Math.PI / 2;
+    if (!total) {
+      ctx.beginPath(); ctx.fillStyle = '#e5e7eb'; ctx.arc(cx, cy, r, 0, Math.PI * 2); ctx.fill();
+    } else {
+      parts.forEach(function (p) {
+        var angle = (p.v / drawTotal) * Math.PI * 2;
+        if (!p.v) return;
+        ctx.beginPath(); ctx.moveTo(cx, cy); ctx.arc(cx, cy, r, start, start + angle);
+        ctx.closePath(); ctx.fillStyle = p.c; ctx.fill(); start += angle;
+      });
+    }
+    ctx.beginPath(); ctx.fillStyle = '#fff'; ctx.arc(cx, cy, r * 0.55, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#111827'; ctx.font = '700 16px Segoe UI, sans-serif';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText(String(total), cx, cy);
+  }
+  drawDonut(document.getElementById('scenario-chart'), chartData);
+
+  (function initTimelineCollapse() {
+    var panel = document.getElementById('timeline-panel');
+    var toggle = document.getElementById('timeline-toggle');
+    var body = document.getElementById('timeline-body');
+    if (!panel || !toggle || !body) return;
+    toggle.addEventListener('click', function () {
+      var open = !panel.classList.contains('open');
+      panel.classList.toggle('open', open);
+      toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+      if (open) body.removeAttribute('hidden');
+      else body.setAttribute('hidden', '');
+    });
+  })();
+
+  function showView(name) {
+    document.querySelectorAll('.view').forEach(function (v) {
+      v.classList.toggle('active', v.id === 'view-' + name);
+    });
+    document.querySelectorAll('.nav-btn').forEach(function (b) {
+      b.classList.toggle('active', b.getAttribute('data-view') === name);
+    });
+  }
+  document.querySelectorAll('.nav-btn').forEach(function (btn) {
+    btn.addEventListener('click', function () { showView(btn.getAttribute('data-view')); });
+  });
+  document.querySelectorAll('.case-head').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      var card = btn.closest('.case-card');
+      var body = card && card.querySelector('.case-body');
+      if (!body) return;
+      var open = body.hasAttribute('hidden');
+      if (open) body.removeAttribute('hidden');
+      else body.setAttribute('hidden', '');
+      btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+    });
+  });
+
+  var statusFilter = 'ALL', tagFilter = '', machineFilter = '', search = '';
+  var caseCards = Array.prototype.slice.call(document.querySelectorAll('.case-card'));
+  var resultEl = document.getElementById('filter-result');
+  var emptyEl = document.getElementById('empty-state');
+
+  function setActiveGroup(selector, attr, value) {
+    document.querySelectorAll(selector).forEach(function (el) {
+      var on = String(el.getAttribute(attr) || '') === String(value);
+      el.classList.toggle('active', on);
+      el.setAttribute('aria-pressed', on ? 'true' : 'false');
+    });
+  }
+  function applyFilters() {
+    var q = (search || '').trim().toLowerCase();
+    var visible = 0;
+    caseCards.forEach(function (row) {
+      var st = String(row.getAttribute('data-status') || '').toUpperCase();
+      var tags = String(row.getAttribute('data-tags') || '');
+      var machine = String(row.getAttribute('data-machine') || '');
+      var text = row.textContent.toLowerCase();
+      var okStatus = statusFilter === 'ALL' || st === statusFilter;
+      var okTag = !tagFilter || ('|' + tags + '|').indexOf('|' + tagFilter.toLowerCase() + '|') >= 0;
+      var okMachine = !machineFilter || machine === machineFilter.toLowerCase();
+      var okSearch = !q || text.indexOf(q) >= 0;
+      var show = okStatus && okTag && okMachine && okSearch;
+      row.classList.toggle('hidden', !show);
+      if (show) visible += 1;
+    });
+    document.querySelectorAll('.tl-row').forEach(function (row) {
+      var st = String(row.getAttribute('data-status') || '').toUpperCase();
+      var tags = String(row.getAttribute('data-tags') || '');
+      var okStatus = statusFilter === 'ALL' || st === statusFilter;
+      var okTag = !tagFilter || ('|' + tags + '|').indexOf('|' + tagFilter.toLowerCase() + '|') >= 0;
+      row.classList.toggle('hidden', !(okStatus && okTag));
+    });
+    document.querySelectorAll('.fail-card').forEach(function (row) {
+      var tags = String(row.getAttribute('data-tags') || '');
+      var text = row.textContent.toLowerCase();
+      var okTag = !tagFilter || ('|' + tags + '|').indexOf('|' + tagFilter.toLowerCase() + '|') >= 0;
+      var okSearch = !q || text.indexOf(q) >= 0;
+      row.classList.toggle('hidden', !(okTag && okSearch));
+    });
+    if (resultEl) resultEl.textContent = 'Showing ' + visible + ' of ' + caseCards.length + ' scenarios';
+    if (emptyEl) emptyEl.classList.toggle('show', visible === 0 && caseCards.length > 0);
+  }
+  function setStatus(value) {
+    statusFilter = value || 'ALL';
+    setActiveGroup('.status-chip', 'data-status', statusFilter);
+    document.querySelectorAll('.card-btn').forEach(function (el) {
+      el.classList.toggle('active', String(el.getAttribute('data-status')) === statusFilter);
+    });
+    applyFilters();
+  }
+  function setTag(value) { tagFilter = value || ''; setActiveGroup('.tag-chip', 'data-tag', tagFilter); applyFilters(); }
+  function setMachine(value) { machineFilter = value || ''; setActiveGroup('.machine-chip', 'data-machine', machineFilter); applyFilters(); }
+  function filterByTagAndOpenScenarios(tag) { setTag(tag || ''); setStatus('ALL'); showView('scenarios'); }
+
+  document.querySelectorAll('.status-chip').forEach(function (btn) {
+    btn.addEventListener('click', function () { setStatus(btn.getAttribute('data-status')); });
+  });
+  document.querySelectorAll('.card-btn').forEach(function (btn) {
+    btn.addEventListener('click', function () { setStatus(btn.getAttribute('data-status')); });
+  });
+  document.querySelectorAll('.tag-chip').forEach(function (btn) {
+    btn.addEventListener('click', function () { setTag(btn.getAttribute('data-tag') || ''); });
+  });
+  document.querySelectorAll('.machine-chip').forEach(function (btn) {
+    btn.addEventListener('click', function () { setMachine(btn.getAttribute('data-machine') || ''); });
+  });
+  document.querySelectorAll('.tag-filter-btn').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      filterByTagAndOpenScenarios(btn.getAttribute('data-tag') || btn.textContent || '');
+    });
+  });
+  var searchInput = document.getElementById('search-input');
+  if (searchInput) {
+    searchInput.addEventListener('input', function () { search = searchInput.value || ''; applyFilters(); });
+  }
+  applyFilters();
+})();
+  </script>
+</body>
+</html>

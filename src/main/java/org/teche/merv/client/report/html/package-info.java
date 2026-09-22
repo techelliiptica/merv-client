@@ -10,6 +10,10 @@
  *   <li>{@link org.teche.merv.client.report.html.MervReportsIndexHtmlWriter} — writes/refreshes the reports dashboard {@code index.html}</li>
  *   <li>{@link org.teche.merv.client.report.html.MervReportBranding} — shared logo, gradients, live-run staleness constant</li>
  *   <li>{@link org.teche.merv.client.report.html.MervHtmlEscape} — HTML escaping for generated markup</li>
+ *   <li>{@link org.teche.merv.client.report.html.MervEmailableHtmlWriter} — interactive {@code emailable-report.html} ({@code merv.emailable.html})</li>
+ *   <li>{@link org.teche.merv.client.report.html.MervOfflineReportZipWriter} — offline share zip (download only)</li>
+ *   <li>{@link org.teche.merv.client.report.html.MervLocalReportArtifacts} — post-finalize emailable hook</li>
+ *   <li>{@link org.teche.merv.client.report.html.MervSuiteShareDownloadHtml} — Share/Download suite chrome</li>
  * </ul>
  */
 package org.teche.merv.client.report.html;

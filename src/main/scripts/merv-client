@@ -1,0 +1,83 @@
+#!/usr/bin/env bash
+# MERV Java CLI launcher — requires Java 17+
+# Layout (project root):
+#   ./merv-client
+#   ./lib/merv-client.jar
+# Auto-downloads the JAR into ./lib/ when missing.
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+LIB_DIR="$SCRIPT_DIR/lib"
+JAR="$LIB_DIR/merv-client.jar"
+DOWNLOAD_BASE="${MERV_CLIENT_DOWNLOAD_URL:-https://merv.online/downloads}"
+
+resolve_jar() {
+  if [[ -f "$JAR" ]]; then
+    echo "$JAR"
+    return 0
+  fi
+  return 1
+}
+
+download_jar() {
+  local url tmp
+  url="${DOWNLOAD_BASE%/}/merv-client.jar"
+  tmp="${JAR}.download"
+
+  mkdir -p "$LIB_DIR" || {
+    echo "[merv-client] Could not create $LIB_DIR" >&2
+    return 1
+  }
+
+  echo "[merv-client] merv-client.jar not found." >&2
+  echo "[merv-client] Downloading to $JAR …" >&2
+  echo "[merv-client] URL: $url" >&2
+
+  if command -v curl >/dev/null 2>&1; then
+    if ! curl -fsSL "$url" -o "$tmp"; then
+      rm -f "$tmp"
+      echo "[merv-client] Download failed (curl)." >&2
+      return 1
+    fi
+  elif command -v wget >/dev/null 2>&1; then
+    if ! wget -q "$url" -O "$tmp"; then
+      rm -f "$tmp"
+      echo "[merv-client] Download failed (wget)." >&2
+      return 1
+    fi
+  else
+    echo "[merv-client] Install curl or wget to auto-download." >&2
+    echo "[merv-client] Or download: https://merv.online/merv-client-download.html" >&2
+    return 1
+  fi
+
+  if [[ ! -s "$tmp" ]]; then
+    rm -f "$tmp"
+    echo "[merv-client] Download failed (empty file)." >&2
+    return 1
+  fi
+
+  mv "$tmp" "$JAR"
+  echo "[merv-client] Saved to $JAR" >&2
+  echo "$JAR"
+}
+
+FOUND="$(resolve_jar || true)"
+if [[ -z "$FOUND" || ! -f "$FOUND" ]]; then
+  FOUND="$(download_jar || true)"
+fi
+
+if [[ -z "$FOUND" || ! -f "$FOUND" ]]; then
+  echo "[merv-client] JAR not found and download did not succeed." >&2
+  echo "[merv-client] Expected: $JAR" >&2
+  echo "[merv-client] Place merv-client (this script) in your project root with a lib/ folder." >&2
+  echo "[merv-client] Download manually: https://merv.online/merv-client-download.html" >&2
+  exit 1
+fi
+
+JAVA_BIN="${JAVA_HOME:+$JAVA_HOME/bin/}java"
+if ! command -v "$JAVA_BIN" >/dev/null 2>&1; then
+  JAVA_BIN=java
+fi
+
+exec "$JAVA_BIN" -jar "$FOUND" "$@"

@@ -197,13 +197,41 @@ class MervLoggerImpl implements MervLogger {
     }
     
     /**
-     * Internal logging method that routes to SLF4J or built-in logging
+     * Internal logging method that routes to SLF4J or built-in logging,
+     * and always mirrors to Merv-Logs NDJSON when file logging is enabled.
      */
     private void log(LogLevel level, String message, Throwable throwable) {
         if (useSlf4j && slf4jLogger != null) {
             logToSlf4j(level, message, throwable);
         } else {
             logToConsole(level, message, throwable);
+        }
+        appendToMervLogs(level, message, throwable);
+    }
+
+    private void appendToMervLogs(LogLevel level, String message, Throwable throwable) {
+        try {
+            MervLogRecord record = new MervLogRecord();
+            record.setTs(java.time.Instant.now().toString());
+            record.setLevel(level.getName());
+            record.setName(name);
+            record.setMsg(message != null ? message : "");
+            if (throwable != null) {
+                StringWriter sw = new StringWriter();
+                throwable.printStackTrace(new PrintWriter(sw));
+                record.setStack(sw.toString());
+            }
+            String suite = MervLogContext.getSuite();
+            String testcase = MervLogContext.getTestcase();
+            if (suite != null) {
+                record.setSuite(suite);
+            }
+            if (testcase != null) {
+                record.setTestcase(testcase);
+            }
+            MervLogSink.appendMervLogRecord(record);
+        } catch (Exception ignored) {
+            /* never fail the caller */
         }
     }
     

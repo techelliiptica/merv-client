@@ -71,6 +71,10 @@
       : '<span class="tag-pill tag-pill-empty" style="opacity:.5">—</span>';
     var href = e.encodedFolderName + '/html/' + (e.running ? 'merv-report-live.html' : 'merv-report.html');
     var dataQ = escHtml((e.folderName + ' ' + e.title + ' ' + (e.tagsDisplay || '')).toLowerCase());
+    var api = window.__mervLiveDashboard;
+    var pageSize = (api && api.SUITE_PAGE_SIZE) || 20;
+    var visible = api && typeof api.getVisibleSuiteCount === 'function' ? api.getVisibleSuiteCount() : pageSize;
+    var pageHidden = idx >= visible;
 
     var el = document.createElement('article');
     el.className = 'suite-card' + isLatest;
@@ -78,6 +82,10 @@
     el.setAttribute('data-card-idx', String(idx));
     el.setAttribute('data-json', escHtml(e.encodedFolderName + '/json/merv-report.json'));
     el.setAttribute('data-folder-name', escHtml(e.folderName));
+    if (pageHidden) {
+      el.setAttribute('data-page-hidden', '1');
+      el.style.display = 'none';
+    }
     el.innerHTML =
       '<div class="suite-top"><div class="suite-title-block"><h3 class="suite-name"></h3><p class="suite-folder"></p></div><span class="status-badge ' +
       statusCls +
@@ -86,7 +94,7 @@
       skipSeg +
       '> &nbsp;|&nbsp; <strong>Skip</strong> <span class="cnt-skip">0</span></span></div>' +
       '<div class="suite-meta"><div class="suite-meta-row"><dl class="suite-meta-dl"><dt>Environment</dt><dd>Local</dd><dt>Release</dt><dd>—</dd><dt>Sprint</dt><dd>—</dd></dl><div class="suite-meta-donut"><div class="donut" title="Pass / Fail / Skip"></div></div></div>' +
-      '<div class="suite-tags-block"><div class="tag-row"></div></div></div>' +
+      '<div class="suite-tags-block"><div class="merv-tags-shell merv-tags-collapsed" data-merv-tag-rows="1"><div class="tag-row"></div></div></div></div>' +
       '<div class="suite-foot"><div class="suite-when"></div><div class="suite-actions"></div></div>';
     patchSuiteCard(el, e, idx);
     return el;
@@ -130,6 +138,12 @@
             })
             .join('')
         : '<span class="tag-pill tag-pill-empty" style="opacity:.5">—</span>';
+      var tagShell = el.querySelector('.merv-tags-shell');
+      if (tagShell && typeof window.mervRefreshTagCollapse === 'function') {
+        tagShell.classList.remove('merv-tags-expanded');
+        tagShell.classList.add('merv-tags-collapsed');
+        window.mervRefreshTagCollapse(tagShell);
+      }
     }
     var when = el.querySelector('.suite-when');
     if (when) {
@@ -203,14 +217,21 @@
       if (fn && !keep.has(fn)) el.remove();
     });
     grid.scrollTop = scroll;
+    if (typeof window.mervRefreshTagCollapse === 'function') window.mervRefreshTagCollapse(grid);
     var ss = document.getElementById('suite-search');
     if (ss) {
       var q = (ss.value || '').toLowerCase().trim();
       document.querySelectorAll('.suite-card').forEach(function (c) {
         var d = c.getAttribute('data-q') || '';
-        c.style.display = !q || d.indexOf(q) >= 0 ? '' : 'none';
+        var match = !q || d.indexOf(q) >= 0;
+        if (match) c.removeAttribute('data-search-hidden');
+        else c.setAttribute('data-search-hidden', '1');
+        var pageHidden = c.getAttribute('data-page-hidden') === '1';
+        c.style.display = match && !pageHidden ? '' : 'none';
       });
     }
+    var api = window.__mervLiveDashboard;
+    if (api && typeof api.applySuiteCardVisibility === 'function') api.applySuiteCardVisibility();
   }
 
   function applyManifest(data) {

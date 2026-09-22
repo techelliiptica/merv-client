@@ -59,6 +59,32 @@ merv.execution.parallel=false
 # Local report upload bundle for MERV UI (json/merv-report.json + screenshots → merv-report-upload.zip)
 # merv.zip.export=true
 
+# Compact interactive emailable HTML at run folder + report root (scenarios, status, failure reasons)
+# Doctor / sample default is false; set true to write on every suite finish
+merv.emailable.html=false
+# merv.emailable.html=true
+
+# Serve reports locally for Share / Download (Java):
+#   mvn -q exec:java -Dexec.mainClass="org.teche.merv.client.utils.MervLocalReportServer"
+# Or use: npx merv show-report --host 0.0.0.0
+# merv.reports.server.host=127.0.0.1
+# merv.reports.server.port=6174
+# Use host 0.0.0.0 to share on LAN
+
+# ============================================================================
+# Merv-Logs (NDJSON + live page)
+# ============================================================================
+# Write NDJSON under {merv.report.folder}/log/ (default true)
+# merv.logger.file=true
+# merv.logger.level=INFO
+
+# Forward this project's logs to another project's running show-report (combined Merv-Logs):
+# merv.log.server=http://127.0.0.1:6174
+# Project name shown on the shared Merv-Logs page (defaults to folder / package name if omitted):
+# merv.log.source=my-project-name
+# Env overrides: MERV_LOG_SERVER, MERV_LOG_SOURCE
+# Local NDJSON is always written first; remote send is async and non-blocking.
+
 # ============================================================================
 # Example Usage
 # ============================================================================

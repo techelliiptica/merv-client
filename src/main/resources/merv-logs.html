@@ -1,0 +1,971 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- merv-logs-page-v13 -->
+<title>Merv-Logs — live console</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Roboto:wght@400;500;600;700&display=swap" rel="stylesheet">
+<script>window.MERV_LOGS_QUERY_API="/api/logs/query";window.MERV_LOGS_CLEAR_API="/api/logs/clear";window.MERV_LOGS_TAIL_API="/api/logs/query";</script>
+<style>
+:root{
+  --bg:#0f1218;--panel:#171b24;--border:#2a3140;--text:#e8ecf4;--muted:#8b93a7;
+  --merv:#e2433a;--info:#3dd68c;--debug:#5b9fd4;--warn:#e6b84d;--error:#ff6b6b;--trace:#a78bfa;
+  --shot-w:50%;
+}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;font-family:'Roboto',system-ui,sans-serif;background:var(--bg);color:var(--text)}
+body{display:flex;flex-direction:column;min-height:100vh}
+a{color:#9ec1ff;text-decoration:none}
+a:hover{text-decoration:underline}
+.top{
+  display:flex;align-items:center;gap:16px;padding:12px 20px;
+  background:linear-gradient(135deg,#1a0a0a,#171b24 40%);
+  border-bottom:1px solid var(--border);flex-shrink:0;
+}
+.brand{display:flex;align-items:center;gap:10px;font-weight:700;letter-spacing:.4px}
+.brand img{height:28px;width:auto}
+.brand span{color:var(--merv)}
+.meta{margin-left:auto;display:flex;align-items:center;gap:10px;flex-wrap:wrap;font-size:13px;color:var(--muted)}
+.meta label.tz-label{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--muted)}
+.meta select#tz-select{
+  background:#0f1218;border:1px solid var(--border);color:var(--text);
+  border-radius:8px;padding:6px 8px;font:inherit;max-width:220px
+}
+.pill{
+  display:inline-flex;align-items:center;gap:6px;padding:4px 10px;border-radius:999px;
+  border:1px solid var(--border);background:var(--panel);font-size:12px;font-weight:500
+}
+.pill .dot{width:8px;height:8px;border-radius:50%;background:#3dd68c;box-shadow:0 0 8px #3dd68c}
+.pill.paused .dot{background:#e6b84d;box-shadow:0 0 8px #e6b84d}
+.toolbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:10px 20px;border-bottom:1px solid var(--border);background:var(--panel);flex-shrink:0}
+.toolbar input[type=search],.toolbar select{
+  background:#0f1218;border:1px solid var(--border);color:var(--text);
+  border-radius:8px;padding:8px 10px;font:inherit;min-width:160px
+}
+.toolbar button{
+  background:#222836;border:1px solid var(--border);color:var(--text);
+  border-radius:8px;padding:8px 12px;font:inherit;cursor:pointer;font-weight:500
+}
+.toolbar button:hover{border-color:#4a5568}
+.toolbar button.danger{color:#ffb4b4;border-color:#5a2a2a}
+.toolbar button#btn-stop-refresh{
+  border-color:#3a4a62;min-width:8.5rem
+}
+.toolbar button#btn-stop-refresh.is-stopped{
+  color:#ffe6a8;border-color:#8a6a1a;background:#2a2210
+}
+.toolbar button#btn-stop-refresh.is-stopped:hover{border-color:#e6b84d}
+.modal-backdrop{
+  display:none;position:fixed;inset:0;z-index:80;
+  background:rgba(0,0,0,.55);align-items:center;justify-content:center;padding:20px
+}
+.modal-backdrop.open{display:flex}
+.modal-backdrop[hidden]{display:none!important}
+.modal{
+  width:min(520px,100%);background:var(--panel);border:1px solid var(--border);
+  border-radius:12px;box-shadow:0 16px 48px rgba(0,0,0,.45);overflow:hidden
+}
+.modal-head{
+  display:flex;align-items:center;justify-content:space-between;gap:12px;
+  padding:14px 16px;border-bottom:1px solid var(--border);font-weight:600
+}
+.modal-head button{
+  background:transparent;border:0;color:var(--muted);font-size:22px;line-height:1;
+  cursor:pointer;padding:0 4px
+}
+.modal-head button:hover{color:var(--text)}
+.modal-body{padding:16px;display:flex;flex-direction:column;gap:12px}
+.modal-body p{margin:0;font-size:13px;color:var(--muted);line-height:1.45}
+.modal-snippet{
+  margin:0;padding:12px 14px;border-radius:8px;background:#0f1218;border:1px solid var(--border);
+  font-family:'IBM Plex Mono',ui-monospace,Menlo,monospace;font-size:12.5px;line-height:1.55;
+  color:var(--text);white-space:pre-wrap;word-break:break-all
+}
+.modal-actions{display:flex;flex-wrap:wrap;gap:8px;justify-content:flex-end}
+.modal-actions button{
+  background:#222836;border:1px solid var(--border);color:var(--text);
+  border-radius:8px;padding:8px 12px;font:inherit;cursor:pointer;font-weight:500
+}
+.modal-actions button:hover{border-color:#4a5568}
+.modal-actions button.primary{border-color:#5a2a2a;background:#2a1515}
+.modal-actions button.copied{color:#b8f0d0;border-color:#2a6a4a;background:#122018}
+.toolbar label{font-size:12px;color:var(--muted);display:flex;align-items:center;gap:6px;cursor:pointer;user-select:none}
+.main-wrap{flex:1;display:flex;min-height:0;position:relative}
+.stream{
+  flex:1;overflow:auto;padding:12px 16px 24px;min-width:0;
+  font-family:'IBM Plex Mono',ui-monospace,Menlo,monospace;font-size:12.5px;line-height:1.55;
+}
+.load-older{
+  text-align:center;padding:10px;color:var(--muted);font-size:12px;font-family:'Roboto',system-ui,sans-serif
+}
+.load-older button{
+  background:#222836;border:1px solid var(--border);color:var(--text);
+  border-radius:8px;padding:6px 12px;font:inherit;cursor:pointer
+}
+.row{display:grid;grid-template-columns:170px 56px minmax(80px,140px) 1fr auto;gap:10px;padding:3px 8px;border-radius:6px;align-items:start}
+.row.msg-only{grid-template-columns:1fr auto}
+.row.msg-only .ts,
+.row.msg-only .lv,
+.row.msg-only .nm,
+.row.msg-only .ctx{display:none}
+.row:hover{background:rgba(255,255,255,.03)}
+.row .ts{color:var(--muted);white-space:nowrap;font-variant-numeric:tabular-nums}
+.row .lv{font-weight:600;letter-spacing:.04em}
+.row .nm{color:#9aa3b5;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.row .msg-wrap{min-width:0}
+.row .msg{white-space:pre-wrap;word-break:break-word}
+.row .ctx{
+  display:block;margin-top:2px;font-size:11px;color:#6e778a;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap
+}
+.row .ctx .sep{opacity:.5;margin:0 4px}
+.row .shot-actions{display:flex;align-items:center;gap:8px;justify-self:end}
+.lv.TRACE{color:var(--trace)}.lv.DEBUG{color:var(--debug)}.lv.INFO{color:var(--info)}
+.lv.WARN{color:var(--warn)}.lv.ERROR{color:var(--error)}
+.stack{grid-column:1/-1;margin:0 0 8px 0;padding:8px 10px;background:#0a0c10;border-left:3px solid var(--error);
+  color:#ffb4b4;white-space:pre-wrap;font-size:11.5px;border-radius:0 6px 6px 0}
+.row.msg-only .stack{border-left-color:var(--border);color:var(--muted)}
+.shot-cam{
+  display:inline-flex;align-items:center;justify-content:center;
+  width:28px;height:28px;padding:0;border-radius:8px;cursor:pointer;
+  border:1px solid var(--border);background:#222836;color:#c5d0e6;
+}
+.shot-cam:hover,.shot-cam.active{border-color:var(--merv);color:#fff;background:#2a1515}
+.shot-cam svg{width:16px;height:16px;display:block}
+.shot-thumb{
+  display:none;height:50px;width:auto;max-width:120px;object-fit:cover;
+  border-radius:4px;border:1px solid var(--border);cursor:pointer;background:#0a0c10;
+}
+body.show-shots .shot-thumb{display:block}
+.empty{color:var(--muted);padding:40px 12px;text-align:center}
+.footer{padding:8px 20px;border-top:1px solid var(--border);font-size:12px;color:var(--muted);flex-shrink:0}
+.scroll-top{
+  position:fixed;right:20px;bottom:28px;z-index:40;
+  width:44px;height:44px;border-radius:50%;
+  border:1px solid var(--border);background:var(--merv);color:#fff;
+  display:none;align-items:center;justify-content:center;
+  cursor:pointer;box-shadow:0 8px 24px rgba(0,0,0,.35);
+  font-size:20px;line-height:1;padding:0;
+}
+body.shot-open .scroll-top{right:calc(var(--shot-w) + 16px)}
+.scroll-top:hover{filter:brightness(1.08)}
+.scroll-top.visible{display:inline-flex}
+.shot-panel{
+  display:none;width:var(--shot-w);flex-shrink:0;
+  border-left:1px solid var(--border);background:var(--panel);
+  flex-direction:column;min-height:0;
+}
+body.shot-open .shot-panel{display:flex}
+.shot-panel-head{
+  display:flex;align-items:center;gap:10px;padding:10px 12px;
+  border-bottom:1px solid var(--border);font-weight:600;font-size:13px;flex-shrink:0
+}
+.shot-panel-head button{
+  margin-left:auto;background:#222836;border:1px solid var(--border);color:var(--text);
+  border-radius:8px;width:32px;height:32px;cursor:pointer;font-size:18px;line-height:1
+}
+.shot-panel-body{flex:1;overflow:auto;padding:12px;display:flex;align-items:center;justify-content:center;min-height:0}
+.shot-panel-body img{max-width:100%;max-height:100%;width:auto;height:auto;object-fit:contain;border-radius:6px;border:1px solid var(--border);background:#0a0c10}
+.shot-panel-empty{color:var(--muted);font-size:13px;padding:24px 8px;text-align:center}
+@media (max-width:800px){
+  .row:not(.msg-only){grid-template-columns:1fr auto;gap:2px}
+  .meta{margin-left:0}
+  .top{flex-wrap:wrap}
+  .scroll-top{right:14px;bottom:22px}
+  body.shot-open .scroll-top{right:14px}
+  body.shot-open .main-wrap{flex-direction:column}
+  body.shot-open .shot-panel{width:100%;max-height:45vh;border-left:none;border-top:1px solid var(--border)}
+}
+</style>
+</head>
+<body>
+<header class="top">
+  <a class="brand" href="./index.html" title="Back to dashboard">
+    <img src="https://merv.online/images/logo.png" alt="MERV" onerror="this.style.display='none'">
+    <span>Merv-Logs</span>
+  </a>
+  <div class="meta">
+    <label class="tz-label" title="Display log timestamps in this timezone">
+      Timezone
+      <select id="tz-select" aria-label="Timezone for log timestamps">
+        <option value="local">Local</option>
+        <option value="UTC">UTC</option>
+        <option value="America/New_York">America/New_York</option>
+        <option value="America/Chicago">America/Chicago</option>
+        <option value="America/Denver">America/Denver</option>
+        <option value="America/Los_Angeles">America/Los_Angeles</option>
+        <option value="Europe/London">Europe/London</option>
+        <option value="Europe/Paris">Europe/Paris</option>
+        <option value="Europe/Berlin">Europe/Berlin</option>
+        <option value="Asia/Kolkata">Asia/Kolkata</option>
+        <option value="Asia/Dubai">Asia/Dubai</option>
+        <option value="Asia/Singapore">Asia/Singapore</option>
+        <option value="Asia/Tokyo">Asia/Tokyo</option>
+        <option value="Australia/Sydney">Australia/Sydney</option>
+      </select>
+    </label>
+    <span class="pill" id="live-pill"><span class="dot"></span><span id="live-label">Live · 1s</span></span>
+    <span id="count-label">0 lines</span>
+    <a href="./index.html">← Test Suites</a>
+  </div>
+</header>
+<div class="toolbar">
+  <input type="search" id="filter-text" placeholder="Filter message / logger…" autocomplete="off">
+  <select id="filter-level" aria-label="Log level filter">
+    <option value="ALL" selected>ALL</option>
+    <option value="TRACE">TRACE+</option>
+    <option value="DEBUG">DEBUG+</option>
+    <option value="INFO">INFO+</option>
+    <option value="WARN">WARN+</option>
+    <option value="ERROR">ERROR only</option>
+  </select>
+  <label title="Hide date, level, and source — show message only">
+    <input type="checkbox" id="no-metadata"> No metadata
+  </label>
+  <label title="Show suite name and testcase name under each log line">
+    <input type="checkbox" id="show-detailed-metadata"> Show detailed metadata
+  </label>
+  <label title="Show 50px screenshot thumbnails next to log lines">
+    <input type="checkbox" id="show-shots"> Show screenshots
+  </label>
+  <label><input type="checkbox" id="auto-scroll" checked> Auto-scroll</label>
+  <button type="button" id="btn-stop-refresh" aria-pressed="false" title="Stop live polling so the log view stays still. Click again to resume.">Stop refresh</button>
+  <button type="button" id="btn-copy-log-url" title="Show settings for other projects to send logs here">Log server URL</button>
+  <button type="button" id="btn-clear-view">Clear view</button>
+  <button type="button" id="btn-clear-file" class="danger" title="Delete log files under log/">Clear files</button>
+</div>
+<div class="modal-backdrop" id="log-url-modal" hidden aria-hidden="true">
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="log-url-modal-title">
+    <div class="modal-head">
+      <span id="log-url-modal-title">Log server settings</span>
+      <button type="button" id="log-url-modal-close" title="Close" aria-label="Close">×</button>
+    </div>
+    <div class="modal-body">
+      <p>Add these lines to another project&rsquo;s <code>merv.properties</code> so its logs appear on this Merv-Logs page.</p>
+      <pre class="modal-snippet" id="log-url-snippet"></pre>
+      <div class="modal-actions">
+        <button type="button" id="btn-copy-url-only">Copy URL</button>
+        <button type="button" id="btn-copy-settings" class="primary">Copy settings</button>
+        <button type="button" id="log-url-modal-done">Done</button>
+      </div>
+    </div>
+  </div>
+</div>
+<div class="main-wrap">
+<main class="stream" id="stream" aria-live="polite">
+  <div class="load-older" id="load-older" hidden>
+    <button type="button" id="btn-load-older">Load older 100 lines</button>
+    <span id="older-status"></span>
+  </div>
+  <div class="empty" id="empty">Waiting for logs… Run tests that call <code>MervLogger.info(...)</code>, then keep this page open.</div>
+</main>
+<aside class="shot-panel" id="shot-panel" aria-label="Screenshot panel">
+  <div class="shot-panel-head">
+    <span>Screenshot</span>
+    <button type="button" id="shot-panel-close" title="Close" aria-label="Close screenshot panel">×</button>
+  </div>
+  <div class="shot-panel-body" id="shot-panel-body">
+    <div class="shot-panel-empty">Click a camera icon or thumbnail to preview.</div>
+  </div>
+</aside>
+</div>
+<footer class="footer">
+  Files: <code>log/merv-…5min….ndjson</code> · optional screenshots in <code>log/screenshots/</code> · 100 lines at a time
+  · <strong>Log server URL</strong> → settings for other projects
+</footer>
+<button type="button" class="scroll-top" id="btn-scroll-top" title="Scroll to top" aria-label="Scroll to top">↑</button>
+<script>
+(function mervLogsPage(){
+  // Prefer injected values from show-report; otherwise use same-origin relative APIs.
+  if (!window.MERV_LOGS_QUERY_API) window.MERV_LOGS_QUERY_API = '/api/logs/query';
+  if (!window.MERV_LOGS_CLEAR_API) window.MERV_LOGS_CLEAR_API = '/api/logs/clear';
+  if (!window.MERV_LOGS_TAIL_API) window.MERV_LOGS_TAIL_API = window.MERV_LOGS_QUERY_API;
+
+  var RANK={TRACE:10,DEBUG:20,INFO:30,WARN:40,ERROR:50};
+  var PAGE=100;
+  var CAM_SVG='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>';
+  var stream=document.getElementById('stream');
+  var empty=document.getElementById('empty');
+  var loadOlderEl=document.getElementById('load-older');
+  var olderStatus=document.getElementById('older-status');
+  var livePill=document.getElementById('live-pill');
+  var liveLabel=document.getElementById('live-label');
+  var countLabel=document.getElementById('count-label');
+  var filterText=document.getElementById('filter-text');
+  var filterLevel=document.getElementById('filter-level');
+  var noMetadata=document.getElementById('no-metadata');
+  var showDetailedMetadata=document.getElementById('show-detailed-metadata');
+  var tzSelect=document.getElementById('tz-select');
+  var showShots=document.getElementById('show-shots');
+  var autoScroll=document.getElementById('auto-scroll');
+  var btnStopRefresh=document.getElementById('btn-stop-refresh');
+  var btnCopyLogUrl=document.getElementById('btn-copy-log-url');
+  var logUrlModal=document.getElementById('log-url-modal');
+  var logUrlSnippet=document.getElementById('log-url-snippet');
+  var btnCopyUrlOnly=document.getElementById('btn-copy-url-only');
+  var btnCopySettings=document.getElementById('btn-copy-settings');
+  var logServerOrigin='';
+  var logServerSettingsText='';
+  var shotPanelBody=document.getElementById('shot-panel-body');
+  var LS_TZ='merv-logs-tz';
+  var LS_DETAILED='merv-logs-detailed-metadata';
+  var refreshStopped=false;
+  var pollTimer=null;
+  try{
+    var savedTz=localStorage.getItem(LS_TZ);
+    if(savedTz && tzSelect){
+      for(var oi=0; oi<tzSelect.options.length; oi++){
+        if(tzSelect.options[oi].value===savedTz){ tzSelect.value=savedTz; break; }
+      }
+    }
+    if(localStorage.getItem(LS_DETAILED)==='1' && showDetailedMetadata){
+      showDetailedMetadata.checked=true;
+    }
+  }catch(_e){}
+
+  function selectedTimeZone(){
+    var v=tzSelect && tzSelect.value ? tzSelect.value : 'local';
+    return v==='local' ? undefined : v;
+  }
+
+  /** Format ISO / Date string into the selected timezone for display. */
+  function formatTs(raw){
+    if(!raw) return '';
+    var d=new Date(raw);
+    if(isNaN(d.getTime())) return String(raw);
+    var tz=selectedTimeZone();
+    try{
+      var opts={
+        year:'numeric', month:'2-digit', day:'2-digit',
+        hour:'2-digit', minute:'2-digit', second:'2-digit',
+        hour12:false
+      };
+      if(tz) opts.timeZone=tz;
+      // en-CA → YYYY-MM-DD, then append time parts
+      var parts=new Intl.DateTimeFormat('en-CA', opts).formatToParts(d);
+      var map={};
+      for(var i=0;i<parts.length;i++) map[parts[i].type]=parts[i].value;
+      var ms=String(d.getMilliseconds()).padStart(3,'0');
+      // Prefer timezone-local ms via formatting fractional seconds when available
+      try{
+        var frac=new Intl.DateTimeFormat('en-US', Object.assign({
+          fractionalSecondDigits:3,
+          hour:'2-digit', minute:'2-digit', second:'2-digit', hour12:false
+        }, tz?{timeZone:tz}:{})).formatToParts(d);
+        for(var fi=0;fi<frac.length;fi++){
+          if(frac[fi].type==='fractionalSecond') ms=frac[fi].value;
+        }
+      }catch(_fe){}
+      return map.year+'-'+map.month+'-'+map.day+' '+map.hour+':'+map.minute+':'+map.second+'.'+ms;
+    }catch(_e){
+      return d.toISOString();
+    }
+  }
+  var rows=[];
+  var olderCursor=null;
+  var newerCursor=null;
+  var hasMoreOlder=false;
+  var loadingOlder=false;
+  var loadingInit=false;
+  var activeShotSrc='';
+  var useStatic=false;
+  var staticCache={}; // file -> { text, lines: [{rec, start, end}] }
+  var POLL_MS=1000;
+
+  function queryApi(){
+    var q=window.MERV_LOGS_QUERY_API || window.MERV_LOGS_TAIL_API || '/api/logs/query';
+    return String(q).trim() || '/api/logs/query';
+  }
+
+  function esc(s){
+    return String(s==null?'':s)
+      .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+
+  function shotSrc(raw){
+    var s=String(raw||'').trim();
+    if(!s) return '';
+    if(/^https?:\/\//i.test(s) || /^data:image\//i.test(s) || s.charAt(0)==='/') return s;
+    return './'+s.replace(/^\.\//,'');
+  }
+
+  function openShot(src, triggerEl){
+    var url=shotSrc(src);
+    if(!url) return;
+    activeShotSrc=url;
+    document.body.classList.add('shot-open');
+    shotPanelBody.innerHTML='<img src="'+esc(url)+'" alt="Screenshot">';
+    stream.querySelectorAll('.shot-cam.active').forEach(function(el){el.classList.remove('active');});
+    if(triggerEl && triggerEl.classList && triggerEl.classList.contains('shot-cam')){
+      triggerEl.classList.add('active');
+    }
+  }
+
+  function closeShot(){
+    activeShotSrc='';
+    document.body.classList.remove('shot-open');
+    shotPanelBody.innerHTML='<div class="shot-panel-empty">Click a camera icon or thumbnail to preview.</div>';
+    stream.querySelectorAll('.shot-cam.active').forEach(function(el){el.classList.remove('active');});
+  }
+
+  function passesFilter(rec){
+    var min=filterLevel.value||'ALL';
+    if(min!=='ALL'){
+      var rl=RANK[String(rec.level||'INFO').toUpperCase()]||30;
+      if(min==='ERROR'){
+        if(String(rec.level).toUpperCase()!=='ERROR') return false;
+      } else if(rl<(RANK[min]||0)){
+        return false;
+      }
+    }
+    var q=String(filterText.value||'').trim().toLowerCase();
+    if(!q) return true;
+    var hay=((rec.msg||'')+' '+(rec.name||'')+' '+(rec.level||'')+' '+(rec.ts||'')+' '+(rec.suite||'')+' '+(rec.testcase||'')+' '+(rec.project||'')).toLowerCase();
+    return hay.indexOf(q)>=0;
+  }
+
+  function renderOne(rec){
+    if(!passesFilter(rec)) return null;
+    var lv=String(rec.level||'INFO').toUpperCase();
+    var div=document.createElement('div');
+    var msgOnly=!!noMetadata.checked;
+    div.className='row'+(msgOnly?' msg-only':'');
+    var suite=String(rec.suite||'').trim();
+    var tc=String(rec.testcase||'').trim();
+    var project=String(rec.project||'').trim();
+    var ctxHtml='';
+    if(showDetailedMetadata && showDetailedMetadata.checked && (suite||tc||project)){
+      var parts=[];
+      if(project) parts.push('<span class="proj">'+esc(project)+'</span>');
+      if(suite) parts.push('<span class="suite">'+esc(suite)+'</span>');
+      if(tc) parts.push('<span class="tc">'+esc(tc)+'</span>');
+      ctxHtml='<span class="ctx" title="'+esc([project,suite,tc].filter(Boolean).join(' › '))+'">'+
+        parts.join('<span class="sep">›</span>')+
+        '</span>';
+    }
+    if(msgOnly){
+      div.innerHTML='<span class="msg-wrap"><span class="msg">'+esc(rec.msg||'')+'</span></span>';
+    } else {
+      var nmLabel=project?project+' / '+(rec.name||''):(rec.name||'');
+      div.innerHTML=
+        '<span class="ts" title="UTC: '+esc(rec.ts||'')+'">'+esc(formatTs(rec.ts))+'</span>'+
+        '<span class="lv '+esc(lv)+'" title="Log type">'+esc(lv)+'</span>'+
+        '<span class="nm" title="Source: '+esc(nmLabel)+'">'+esc(project||rec.name||'')+'</span>'+
+        '<span class="msg-wrap"><span class="msg" title="Message">'+esc(rec.msg||'')+'</span>'+ctxHtml+'</span>';
+    }
+    var shot=String(rec.screenshot||'').trim();
+    if(shot){
+      var src=shotSrc(shot);
+      var actions=document.createElement('div');
+      actions.className='shot-actions';
+      var thumb=document.createElement('img');
+      thumb.className='shot-thumb';
+      thumb.src=src;
+      thumb.alt='';
+      thumb.title='Open screenshot';
+      thumb.addEventListener('click',function(e){
+        e.stopPropagation();
+        openShot(shot, cam);
+      });
+      var cam=document.createElement('button');
+      cam.type='button';
+      cam.className='shot-cam'+(activeShotSrc===src?' active':'');
+      cam.title='Open screenshot';
+      cam.setAttribute('aria-label','Open screenshot');
+      cam.innerHTML=CAM_SVG;
+      cam.addEventListener('click',function(e){
+        e.stopPropagation();
+        if(document.body.classList.contains('shot-open') && activeShotSrc===src) closeShot();
+        else openShot(shot, cam);
+      });
+      actions.appendChild(thumb);
+      actions.appendChild(cam);
+      div.appendChild(actions);
+    } else {
+      var spacer=document.createElement('span');
+      spacer.className='shot-actions';
+      div.appendChild(spacer);
+    }
+    if(rec.stack){
+      var st=document.createElement('pre');
+      st.className='stack';
+      st.textContent=String(rec.stack);
+      div.appendChild(st);
+    }
+    return div;
+  }
+
+  function updateOlderUi(){
+    if(hasMoreOlder && olderCursor){
+      loadOlderEl.hidden=false;
+      olderStatus.textContent=loadingOlder?' Loading…':'';
+    } else {
+      loadOlderEl.hidden=true;
+    }
+  }
+
+  function rebuild(){
+    var keepLoad=loadOlderEl;
+    stream.innerHTML='';
+    stream.appendChild(keepLoad);
+    var visible=0;
+    for(var i=0;i<rows.length;i++){
+      var el=renderOne(rows[i]);
+      if(el){stream.appendChild(el);visible++;}
+    }
+    if(!visible){
+      empty.style.display='';
+      empty.textContent=rows.length?'No lines match the current filters.':'Waiting for logs… Run tests that call MervLogger.info(...), then keep this page open.';
+      stream.appendChild(empty);
+    } else {
+      empty.style.display='none';
+    }
+    countLabel.textContent=visible+' shown · '+rows.length+' loaded';
+    updateOlderUi();
+    if(autoScroll.checked) stream.scrollTop=stream.scrollHeight;
+  }
+
+  function appendNew(list){
+    if(!list||!list.length) return;
+    var atBottom=stream.scrollHeight-stream.scrollTop-stream.clientHeight<80;
+    for(var i=0;i<list.length;i++){
+      rows.push(list[i]);
+      var el=renderOne(list[i]);
+      if(el){
+        if(empty.parentNode===stream) empty.remove();
+        stream.appendChild(el);
+      }
+    }
+    countLabel.textContent=stream.querySelectorAll('.row').length+' shown · '+rows.length+' loaded';
+    if(autoScroll.checked && atBottom) stream.scrollTop=stream.scrollHeight;
+  }
+
+  function prependOlder(list){
+    if(!list||!list.length) return;
+    var prevHeight=stream.scrollHeight;
+    var prevTop=stream.scrollTop;
+    rows=list.concat(rows);
+    rebuild();
+    stream.scrollTop=stream.scrollHeight-prevHeight+prevTop;
+  }
+
+  function buildQuery(params){
+    var api=queryApi();
+    var q=[];
+    q.push('limit='+encodeURIComponent(String(params.limit||PAGE)));
+    if(params.before){
+      q.push('beforeFile='+encodeURIComponent(params.before.file));
+      q.push('beforeOffset='+encodeURIComponent(String(params.before.offset)));
+    }
+    if(params.after){
+      q.push('afterFile='+encodeURIComponent(params.after.file));
+      q.push('afterOffset='+encodeURIComponent(String(params.after.offset)));
+    }
+    q.push('ts='+Date.now());
+    return api+(api.indexOf('?')>=0?'&':'?')+q.join('&');
+  }
+
+  function BufferByteLengthApprox(s){
+    if(typeof TextEncoder!=='undefined') return new TextEncoder().encode(s).length;
+    return unescape(encodeURIComponent(s)).length;
+  }
+
+  async function loadStaticFile(file){
+    if(staticCache[file] && staticCache[file].fresh) return staticCache[file];
+    var url = file.indexOf('/')>=0 ? './'+file : './log/'+file;
+    var r=await fetch(url+'?ts='+Date.now(),{cache:'no-store'});
+    if(!r.ok) throw new Error('static '+file+' '+r.status);
+    var text=await r.text();
+    var enc=typeof TextEncoder!=='undefined'?new TextEncoder():null;
+    var lines=[];
+    var abs=0;
+    var chunks=text.split('\n');
+    for(var j=0;j<chunks.length;j++){
+      var ln=chunks[j];
+      var bl=enc?enc.encode(ln).length:BufferByteLengthApprox(ln);
+      var start=abs;
+      abs+=bl;
+      var hadNl=j<chunks.length-1;
+      if(hadNl) abs+=1;
+      if(!ln || !String(ln).trim()) continue;
+      try{ lines.push({rec:JSON.parse(ln), start:start, end:start+bl+(hadNl?1:0)}); }
+      catch(_e){ lines.push({rec:{ts:'',level:'INFO',name:'Merv',msg:ln}, start:start, end:start+bl+(hadNl?1:0)}); }
+    }
+    staticCache[file]={text:text, lines:lines, size:abs, fresh:true};
+    return staticCache[file];
+  }
+
+  async function listStaticFiles(){
+    var r=await fetch('./log/manifest.json?ts='+Date.now(),{cache:'no-store'});
+    if(r.ok){
+      var j=await r.json();
+      return Array.isArray(j.files)?j.files:[];
+    }
+    // Fallback: try recent 5-minute bucket names around now (UTC)
+    var files=[];
+    var now=Date.now();
+    for(var k=0;k<12;k++){
+      var d=new Date(now-k*5*60*1000);
+      var y=d.getUTCFullYear();
+      var m=String(d.getUTCMonth()+1).padStart(2,'0');
+      var day=String(d.getUTCDate()).padStart(2,'0');
+      var h=String(d.getUTCHours()).padStart(2,'0');
+      var min=String(Math.floor(d.getUTCMinutes()/5)*5).padStart(2,'0');
+      files.push('merv-'+y+'-'+m+'-'+day+'T'+h+'-'+min+'.ndjson');
+    }
+    files.reverse();
+    var existing=[];
+    for(var i=0;i<files.length;i++){
+      try{
+        var hr=await fetch('./log/'+files[i]+'?ts='+Date.now(),{method:'HEAD',cache:'no-store'});
+        if(hr.ok) existing.push(files[i]);
+      }catch(_e){}
+    }
+    return existing;
+  }
+
+  async function staticQuery(params){
+    var limit=Math.max(1, Math.min(500, params.limit||PAGE));
+    var files=await listStaticFiles();
+    if(!files.length) return {lines:[], older:null, newer:null, hasMoreOlder:false};
+
+    if(params.after && params.after.file){
+      var afterIdx=files.indexOf(params.after.file);
+      if(afterIdx<0) afterIdx=files.length-1;
+      var collected=[];
+      var file=params.after.file;
+      var offset=params.after.offset||0;
+      for(var ai=afterIdx; ai<files.length && collected.length<limit; ai++){
+        file=files[ai];
+        var packed=await loadStaticFile(file);
+        var startOff = (ai===afterIdx)?offset:0;
+        for(var li=0; li<packed.lines.length && collected.length<limit; li++){
+          if(packed.lines[li].start >= startOff) collected.push(packed.lines[li].rec);
+        }
+        offset = packed.size;
+      }
+      return {
+        lines: collected,
+        older: null,
+        newer: {file:file, offset:offset},
+        hasMoreOlder: true
+      };
+    }
+
+    // Newest or before
+    var endFile = params.before && params.before.file ? params.before.file : files[files.length-1];
+    var endOffset = params.before ? params.before.offset : null;
+    var idx=files.indexOf(endFile);
+    if(idx<0) idx=files.length-1;
+    var got=[];
+    var firstStart=null;
+    var firstFile=null;
+
+    for(var fi=idx; fi>=0 && got.length<limit; fi--){
+      var f=files[fi];
+      var pack=await loadStaticFile(f);
+      var end = (fi===idx && endOffset!=null) ? endOffset : pack.size;
+      for(var rj=pack.lines.length-1; rj>=0 && got.length<limit; rj--){
+        var entry=pack.lines[rj];
+        if(entry.end > end) continue;
+        if(entry.start >= end) continue;
+        got.push(entry.rec);
+        firstStart=entry.start;
+        firstFile=f;
+      }
+    }
+    got.reverse();
+    var older = firstFile!=null ? {file:firstFile, offset:firstStart||0} : null;
+    var tipFile=files[files.length-1];
+    var tipPack=await loadStaticFile(tipFile);
+    return {
+      lines: got,
+      older: older,
+      newer: {file: tipFile, offset: tipPack.size},
+      hasMoreOlder: !!(older && (older.offset>0 || files.indexOf(older.file)>0))
+    };
+  }
+
+  async function fetchQuery(params){
+    if(useStatic) return staticQuery(params);
+    var url=buildQuery(params);
+    try{
+      var r=await fetch(url,{cache:'no-store'});
+      if(!r.ok) throw new Error('query '+r.status);
+      return r.json();
+    }catch(e){
+      // API missing (opened via Live Server / file) — fall back to log/manifest.json + ndjson.
+      useStatic=true;
+      liveLabel.textContent='Static · files';
+      return staticQuery(params);
+    }
+  }
+
+  async function loadInitial(){
+    if(loadingInit) return;
+    loadingInit=true;
+    try{
+      var j=await fetchQuery({limit:PAGE});
+      rows=j.lines||[];
+      olderCursor=j.older||null;
+      newerCursor=j.newer||null;
+      hasMoreOlder=!!j.hasMoreOlder;
+      rebuild();
+      if(!rows.length){
+        empty.style.display='';
+        empty.textContent='No log lines yet under log/. Run tests, then refresh this page.';
+        stream.appendChild(empty);
+      }
+    }catch(e){
+      liveLabel.textContent='Retry…';
+      empty.style.display='';
+      empty.textContent='Could not load logs. Prefer `npx merv show-report` and open Merv-Logs from there. ('+String(e&&e.message||e)+')';
+      stream.appendChild(empty);
+    }finally{
+      loadingInit=false;
+    }
+  }
+
+  async function loadOlder(){
+    if(loadingOlder||!hasMoreOlder||!olderCursor) return;
+    loadingOlder=true;
+    updateOlderUi();
+    try{
+      // Invalidate static cache so older pages see fresh file sizes if needed
+      if(useStatic) Object.keys(staticCache).forEach(function(k){ staticCache[k].fresh=false; });
+      var j=await fetchQuery({limit:PAGE,before:olderCursor});
+      var list=j.lines||[];
+      if(list.length) prependOlder(list);
+      olderCursor=j.older||null;
+      hasMoreOlder=!!j.hasMoreOlder && list.length>0;
+      if(j.newer) newerCursor=j.newer;
+      updateOlderUi();
+      countLabel.textContent=stream.querySelectorAll('.row').length+' shown · '+rows.length+' loaded';
+    }catch(e){
+      olderStatus.textContent=' Failed';
+    }finally{
+      loadingOlder=false;
+      updateOlderUi();
+    }
+  }
+
+  function syncRefreshUi(){
+    if(refreshStopped){
+      livePill.classList.add('paused');
+      liveLabel.textContent='Stopped';
+      if(btnStopRefresh){
+        btnStopRefresh.textContent='Resume refresh';
+        btnStopRefresh.classList.add('is-stopped');
+        btnStopRefresh.setAttribute('aria-pressed','true');
+        btnStopRefresh.title='Resume live polling for new log lines.';
+      }
+    }else{
+      livePill.classList.remove('paused');
+      if(!useStatic) liveLabel.textContent='Live · 1s';
+      else liveLabel.textContent='Static · files';
+      if(btnStopRefresh){
+        btnStopRefresh.textContent='Stop refresh';
+        btnStopRefresh.classList.remove('is-stopped');
+        btnStopRefresh.setAttribute('aria-pressed','false');
+        btnStopRefresh.title='Stop live polling so the log view stays still. Click again to resume.';
+      }
+    }
+  }
+
+  function stopRefreshPolling(){
+    if(pollTimer!==null){
+      clearInterval(pollTimer);
+      pollTimer=null;
+    }
+    refreshStopped=true;
+    syncRefreshUi();
+  }
+
+  function startRefreshPolling(){
+    refreshStopped=false;
+    syncRefreshUi();
+    if(pollTimer===null){
+      pollTimer=setInterval(pollNewer,POLL_MS);
+    }
+    pollNewer();
+  }
+
+  function toggleRefreshPolling(){
+    if(refreshStopped) startRefreshPolling();
+    else stopRefreshPolling();
+  }
+
+  async function pollNewer(){
+    if(refreshStopped){
+      syncRefreshUi();
+      return;
+    }
+    syncRefreshUi();
+    if(!newerCursor||!newerCursor.file){
+      if(!rows.length) await loadInitial();
+      return;
+    }
+    try{
+      if(useStatic) Object.keys(staticCache).forEach(function(k){ staticCache[k].fresh=false; });
+      var j=await fetchQuery({limit:PAGE,after:newerCursor});
+      if(j.newer) newerCursor=j.newer;
+      appendNew(j.lines||[]);
+    }catch(e){
+      liveLabel.textContent='Retry…';
+    }
+  }
+
+  filterText.addEventListener('input',rebuild);
+  filterLevel.addEventListener('change',rebuild);
+  noMetadata.addEventListener('change',rebuild);
+  if(showDetailedMetadata){
+    showDetailedMetadata.addEventListener('change',function(){
+      try{ localStorage.setItem(LS_DETAILED, showDetailedMetadata.checked?'1':'0'); }catch(_e){}
+      rebuild();
+    });
+  }
+  if(tzSelect){
+    tzSelect.addEventListener('change',function(){
+      try{ localStorage.setItem(LS_TZ, tzSelect.value); }catch(_e){}
+      rebuild();
+    });
+  }
+  showShots.addEventListener('change',function(){
+    document.body.classList.toggle('show-shots', !!showShots.checked);
+  });
+  if(btnStopRefresh){
+    btnStopRefresh.addEventListener('click',toggleRefreshPolling);
+  }
+  function copyText(text, btn){
+    function mark(){
+      if(!btn) return;
+      var prev=btn.textContent;
+      btn.classList.add('copied');
+      btn.textContent='Copied!';
+      setTimeout(function(){
+        btn.classList.remove('copied');
+        btn.textContent=prev;
+      },1400);
+    }
+    if(navigator.clipboard && navigator.clipboard.writeText){
+      return navigator.clipboard.writeText(text).then(mark).catch(function(){
+        try{
+          var ta=document.createElement('textarea');
+          ta.value=text;document.body.appendChild(ta);ta.select();
+          document.execCommand('copy');document.body.removeChild(ta);
+          mark();
+        }catch(_e){}
+      });
+    }
+    try{
+      var ta2=document.createElement('textarea');
+      ta2.value=text;document.body.appendChild(ta2);ta2.select();
+      document.execCommand('copy');document.body.removeChild(ta2);
+      mark();
+    }catch(_e2){}
+  }
+  function closeLogUrlModal(){
+    if(!logUrlModal) return;
+    logUrlModal.classList.remove('open');
+    logUrlModal.hidden=true;
+    logUrlModal.setAttribute('aria-hidden','true');
+  }
+  function openLogUrlModal(){
+    var origin=(window.location && window.location.origin) ? window.location.origin : '';
+    if(!origin || origin==='null' || origin.indexOf('file:')===0){
+      alert('Open this page via `npx merv show-logs` (or `show-report`) to get a shareable log server URL.');
+      return;
+    }
+    // 0.0.0.0 is a bind address — other projects need a reachable host.
+    try{
+      var u=new URL(origin);
+      if(u.hostname==='0.0.0.0'){
+        u.hostname='127.0.0.1';
+        origin=u.origin;
+      }
+    }catch(_e){}
+    logServerOrigin=origin;
+    logServerSettingsText=
+      '# Send this project\'s logs to the shared Merv-Logs server\n'+
+      'merv.log.server='+origin+'\n'+
+      '# Project name shown on the shared page\n'+
+      'merv.log.source=my-project-name\n';
+    if(logUrlSnippet) logUrlSnippet.textContent=logServerSettingsText;
+    if(logUrlModal){
+      logUrlModal.hidden=false;
+      logUrlModal.classList.add('open');
+      logUrlModal.setAttribute('aria-hidden','false');
+    }
+  }
+  if(btnCopyLogUrl){
+    btnCopyLogUrl.addEventListener('click',openLogUrlModal);
+  }
+  if(btnCopyUrlOnly){
+    btnCopyUrlOnly.addEventListener('click',function(){
+      copyText(logServerOrigin, btnCopyUrlOnly);
+    });
+  }
+  if(btnCopySettings){
+    btnCopySettings.addEventListener('click',function(){
+      copyText(logServerSettingsText, btnCopySettings);
+    });
+  }
+  var logUrlClose=document.getElementById('log-url-modal-close');
+  var logUrlDone=document.getElementById('log-url-modal-done');
+  if(logUrlClose) logUrlClose.addEventListener('click',closeLogUrlModal);
+  if(logUrlDone) logUrlDone.addEventListener('click',closeLogUrlModal);
+  if(logUrlModal){
+    logUrlModal.addEventListener('click',function(e){
+      if(e.target===logUrlModal) closeLogUrlModal();
+    });
+  }
+  document.addEventListener('keydown',function(e){
+    if(e.key==='Escape' && logUrlModal && logUrlModal.classList.contains('open')){
+      closeLogUrlModal();
+    }
+  });
+  if(livePill){
+    livePill.style.cursor='pointer';
+    livePill.title='Click to stop or resume live refresh';
+    livePill.addEventListener('click',toggleRefreshPolling);
+  }
+  document.getElementById('shot-panel-close').addEventListener('click',closeShot);
+  document.getElementById('btn-load-older').addEventListener('click',loadOlder);
+  document.getElementById('btn-clear-view').addEventListener('click',function(){
+    rows=[];olderCursor=null;hasMoreOlder=false;closeShot();rebuild();
+  });
+  document.getElementById('btn-clear-file').addEventListener('click',function(){
+    if(!confirm('Clear all files under log/ (including screenshots)?')) return;
+    var api=window.MERV_LOGS_CLEAR_API || '/api/logs/clear';
+    fetch(api,{method:'POST'}).then(function(){
+      rows=[];olderCursor=null;newerCursor=null;hasMoreOlder=false;staticCache={};closeShot();rebuild();
+    }).catch(function(){alert('Clear API failed — use `npx merv show-report`.');});
+  });
+
+  var btnScrollTop=document.getElementById('btn-scroll-top');
+  function updateScrollTopBtn(){
+    if(stream.scrollTop>120) btnScrollTop.classList.add('visible');
+    else btnScrollTop.classList.remove('visible');
+  }
+  stream.addEventListener('scroll',function(){
+    updateScrollTopBtn();
+    if(stream.scrollTop<40) loadOlder();
+  });
+  btnScrollTop.addEventListener('click',function(){
+    autoScroll.checked=false;
+    stream.scrollTo({top:0,behavior:'smooth'});
+    if(hasMoreOlder) loadOlder();
+  });
+  document.addEventListener('keydown',function(e){
+    if(e.key==='Escape' && document.body.classList.contains('shot-open')) closeShot();
+  });
+
+  loadInitial();
+  startRefreshPolling();
+})();
+</script>
+</body>
+</html>
